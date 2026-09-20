@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Required Notice: Copyright (c) 2026 AdamMady.
 // Required Notice: Original repository: https://github.com/AdamMady/Mady-s-Hide-And-Seek
 // Commercial use requires prior written permission from AdamMady.
@@ -24,7 +24,7 @@ public enum LockedTime { Natural,Sunrise,Day,Sunset,Night }
 [BepInPlugin(Guid, Name, Version)]
 public sealed class Plugin : BasePlugin
 {
-    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.0.0";
+    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.0.4";
     internal const string DiscordUrl="https://discord.gg/5z3WvVhxCf";
     internal static ConfigEntry<KeyCode> MenuKey,SetupKey;
     internal static ConfigEntry<float> HideTime, RoundTime, Radius, HiderHeight, ReturnInset, EndRadius, RandomItemChance;
@@ -206,6 +206,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     readonly List<PeckEffectTextInput> instructionSignBoards=new();
     bool simpleVisible,setupVisible,poolBuilt,enforceBorder=true,cleanupPending,showSpawnDebug,spawnDraftLights,finalThirtyTriggered,menuCursorActive,previousCursorVisible;
     float cleanupItemReleaseAt=-1f;
+    int cleanupSnatchAttempts;
     readonly Dictionary<PlayerCharacter,Prop> cleanupManagerItems=new();
     readonly Dictionary<Prop,float> brushPickupGraceUntil=new();
     CursorLockMode previousCursorLock;
@@ -294,10 +295,10 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         ProcessClientTransports();
         ProcessTransport();
         if(poolBuilt&&Time.unscaledTime>=nextMarkerPin){nextMarkerPin=Time.unscaledTime+.05f;MaintainMarkers();}
-        if(cleanupPending&&activeTransports.Count==0&&clientTransports.Count==0&&priorityTransports.Count==0&&transports.Count==0)
+        if(cleanupPending&&(cleanupItemReleaseAt>=0f||(activeTransports.Count==0&&clientTransports.Count==0&&priorityTransports.Count==0&&transports.Count==0)))
         {
-            if(cleanupItemReleaseAt<0f){PrepareBorrowedPropRelease();cleanupItemReleaseAt=Time.unscaledTime+.5f;}
-            else if(Time.unscaledTime>=cleanupItemReleaseAt){cleanupPending=false;cleanupItemReleaseAt=-1f;RestoreBorrowedProps();}
+            if(cleanupItemReleaseAt<0f){PrepareBorrowedPropRelease();cleanupSnatchAttempts=0;RepeatCleanupSnatch();cleanupItemReleaseAt=Time.unscaledTime+.05f;}
+            else if(Time.unscaledTime>=cleanupItemReleaseAt){if(cleanupSnatchAttempts<10){RepeatCleanupSnatch();cleanupItemReleaseAt=Time.unscaledTime+.05f;}else{cleanupPending=false;cleanupItemReleaseAt=-1f;RestoreBorrowedProps();}}
         }
         if(phase==Phase.Ended){if(hasEndSpawn&&Time.unscaledTime>=nextScan){nextScan=Time.unscaledTime+.05f;HandleConnections();MaintainCorpses();EnforceEndArea();}return;}
         if(phase==Phase.SettingUp)
@@ -1185,7 +1186,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         foreach(var pair in new Dictionary<PlayerCharacter,Prop>(cleanupManagerItems))
         {
             var manager=pair.Key;var prop=pair.Value;
-            if(manager?.playerNetworking!=null){manager.playerNetworking.ServerDropPropAutomatic(true);BroadcastSnapshot(manager.playerNetworking);}
+            if(manager?.playerNetworking!=null){DirectLocalTeleport(manager,MarkerStorage());manager.playerNetworking.ServerDropPropAutomatic(true);BroadcastSnapshot(manager.playerNetworking);}
             if(prop!=null)BroadcastSnapshot(prop);
         }
         cleanupManagerItems.Clear();
@@ -1208,29 +1209,40 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         StoreGear();
         Plugin.Logger.LogInfo("[CLEANUP] Gear moved to storage. Signs and border markers retained.");
     }
+    void RepeatCleanupSnatch()
+    {
+        cleanupSnatchAttempts++;
+        foreach(var pair in cleanupManagerItems)
+        {
+            var manager=pair.Key;var prop=pair.Value;
+            if(manager?.playerNetworking==null||prop==null)continue;
+            try{manager.playerNetworking.ServerPickUpPropAutomatic(prop);}
+            catch(Exception ex){Plugin.Logger.LogWarning("[ITEM RELEASE] snatch "+cleanupSnatchAttempts+"/10 failed: "+ex.GetBaseException().Message);}
+        }
+        if(cleanupSnatchAttempts==10)Plugin.Logger.LogInfo("[ITEM RELEASE] completed 10 snatch attempts; releasing to storage next tick.");
+    }
     void PrepareBorrowedPropRelease()
     {
-        cleanupManagerItems.Clear();int snatched=0,fallback=0,managerIndex=0;
+        cleanupManagerItems.Clear();int snatched=0,fallback=0;
         var usedManagers=new HashSet<PlayerCharacter>();
+        var usedProps=new HashSet<Prop>();
         var targets=new Dictionary<PlayerCharacter,Prop>();
         foreach(var pair in normalItemAssignments){var player=FindPlayer(pair.Key);if(player!=null&&pair.Value!=null)targets[player]=pair.Value;}
         foreach(var pair in lockedSpeakerAssignments){var player=FindPlayer(pair.Key);if(player!=null&&pair.Value!=null)targets[player]=pair.Value;}
         foreach(var player in Players())if(!IsDummyManager(player)&&player.hands?.heldProp!=null&&propOrigins.ContainsKey(player.hands.heldProp))targets[player]=player.hands.heldProp;
-        var storage=hasGearStorage?gearStorage:(hasCenter?center+Vector3.down*500f:new Vector3(0f,-500f,0f));
         foreach(var target in targets)
         {
             var player=target.Key;var prop=target.Value;
+            if(!usedProps.Add(prop))continue;
             PlayerCharacter manager=null;
             foreach(var candidate in standbyManagers)
                 if(candidate!=null&&!usedManagers.Contains(candidate)&&candidate.hands?.heldCharacter==null&&candidate.hands?.heldProp==null){manager=candidate;break;}
             if(manager==null){StopUsingHeldProp(player,prop);fallback++;continue;}
             usedManagers.Add(manager);
-            manager.playerNetworking.ServerPickUpPropAutomatic(prop);
             cleanupManagerItems[manager]=prop;
-            DirectLocalTeleport(manager,storage+new Vector3(managerIndex++*.75f,3f,0f));
             snatched++;
         }
-        Plugin.Logger.LogInfo("[ITEM RELEASE] managers snatched "+snatched+" held item(s); direct fallback="+fallback+". Waiting 0.5s before storage.");
+        Plugin.Logger.LogInfo("[ITEM RELEASE] managers reserved for "+snatched+" held item(s); direct fallback="+fallback+". Performing 10 snatches at 0.05s intervals before storage.");
     }
     bool IsGear(Prop prop)=>megaphones.Contains(prop)||walkies.Contains(prop)||flares.Contains(prop)||xrayGoggles.Contains(prop)||speakers.Contains(prop)||belts.Contains(prop)||bells.Contains(prop)||brushes.Contains(prop);
     bool IsSign(Prop prop)=>prop==seekerBoardProp||prop==endBoardProp||prop==statusBoardProp||instructionSignProps.Contains(prop);
@@ -1503,7 +1515,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     PlayerCharacter WorkerFor(PlayerCharacter player,Vector3 target)
     {
         var busy=new HashSet<PlayerCharacter>();foreach(var active in activeTransports)if(active?.Worker!=null)busy.Add(active.Worker);
-        PlayerCharacter best=null;float bestDistance=float.MaxValue;foreach(var worker in standbyManagers){if(worker==null||busy.Contains(worker)||worker.hands?.heldCharacter!=null)continue;float distance=HorizontalDistanceSquared(worker.transform.position,player.transform.position);if(distance<bestDistance){bestDistance=distance;best=worker;}}return best;
+        PlayerCharacter best=null;float bestDistance=float.MaxValue;foreach(var worker in standbyManagers){if(worker==null||busy.Contains(worker)||cleanupManagerItems.ContainsKey(worker)||worker.hands?.heldCharacter!=null)continue;float distance=HorizontalDistanceSquared(worker.transform.position,player.transform.position);if(distance<bestDistance){bestDistance=distance;best=worker;}}return best;
     }
     void ProcessTransport(TransportRequest request)
     {
@@ -1552,7 +1564,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void ParkIdleWorkers()
     {
         var busy=new HashSet<PlayerCharacter>();foreach(var request in activeTransports)if(request?.Worker!=null)busy.Add(request.Worker);
-        for(int i=0;i<standbyManagers.Count;i++)if(standbyManagers[i]!=null&&standbyManagers[i].hands?.heldCharacter==null&&!busy.Contains(standbyManagers[i]))DirectLocalTeleport(standbyManagers[i],WorkerParkingPosition(i));
+        for(int i=0;i<standbyManagers.Count;i++)if(standbyManagers[i]!=null&&standbyManagers[i].hands?.heldCharacter==null&&!busy.Contains(standbyManagers[i])&&!cleanupManagerItems.ContainsKey(standbyManagers[i]))DirectLocalTeleport(standbyManagers[i],WorkerParkingPosition(i));
     }
     Vector3 WorkerParkingPosition(int index)
     {
