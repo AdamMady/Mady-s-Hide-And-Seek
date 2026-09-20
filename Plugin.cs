@@ -266,12 +266,19 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void Awake(){Instance=this;}
 
     void Start(){LoadDefaultPresetIfUnconfigured();hasCenter=TryVector(Plugin.AreaPoint.Value,out center);hasSeeker=TryVector(Plugin.SeekerPoint.Value,out seekerSpawn);hasEndSpawn=TryVector(Plugin.EndPoint.Value,out endSpawn);hasGearStorage=TryVector(Plugin.GearStoragePoint.Value,out gearStorage);LoadSlots(Plugin.HiderSpawnSlots.Value,hiderSpawnSlots,11);LoadSlots(Plugin.SeekerSpawnSlots.Value,seekerSpawnSlots,11);LoadSlots(Plugin.EndSpawnSlots.Value,endSpawnSlots,11);LoadSlots(Plugin.DummyStandbySlots.Value,standbySlots,11);LoadSlots(Plugin.DraftSpawnSlots.Value,spawnPoints,11);LoadSlots(Plugin.BorderPoints.Value,borderPoints,20);LoadSlots(Plugin.PlayBorder.Value,playBorder,20);LoadSlots(Plugin.SeekerBorder.Value,seekerBorder,20);LoadSlots(Plugin.EndBorder.Value,endBorder,20);LoadSlots(Plugin.DraftRecoveryPoints.Value,recoveryPoints,int.MaxValue);LoadSlots(Plugin.PlayRecoveryPoints.Value,playRecoveryPoints,int.MaxValue);LoadSigns(Plugin.InstructionSigns.Value);hasSeekerSign=TrySign(Plugin.SeekerSignTransform.Value,out seekerSignPosition,out seekerSignYaw);hasEndSign=TrySign(Plugin.EndSignTransform.Value,out endSignPosition,out endSignYaw);hasStatusSign=TrySign(Plugin.StatusSignTransform.Value,out statusSignPosition,out statusSignYaw);LoadPlayAreas();MarkSetupBaseline();}
+    static bool GameTextInputActive()
+    {
+        if(ControlsManager.textInputModeActive)return true;
+        try{if(SignTextInput.IsSignInputActive())return true;}catch{}
+        try{return TextChatInput.instance?.inputIsOpen==true;}catch{return false;}
+    }
     void Update()
     {
         ObserveSession();
         if(!Plugin.Enabled.Value){simpleVisible=false;setupVisible=false;SyncMenuCursor();if(sessionEnabled||remoteSessionEnabled)ResetSession();return;}
-        if(Input.GetKeyDown(Plugin.MenuKey.Value)) simpleVisible=!simpleVisible;
-        if(Input.GetKeyDown(Plugin.SetupKey.Value)) setupVisible=!setupVisible;
+        if(!NetworkClient.active||!NetworkClient.isConnected){simpleVisible=false;setupVisible=false;SyncMenuCursor();return;}
+        if(!GameTextInputActive()&&Input.GetKeyDown(Plugin.MenuKey.Value)) simpleVisible=!simpleVisible;
+        if(!GameTextInputActive()&&Input.GetKeyDown(Plugin.SetupKey.Value)) setupVisible=!setupVisible;
         SyncMenuCursor();
 
         MaintainModNetworking();
