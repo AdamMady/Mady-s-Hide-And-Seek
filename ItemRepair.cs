@@ -70,7 +70,7 @@ public sealed partial class HideAndSeekTester
         Instance.normalItemAssignments.Remove(transfer.AssignmentOwner);
         Instance.normalItemAssignments[key]=item;
 
-        Plugin.Logger.LogInfo("[ITEM TRANSFER] "+transfer.AssignmentOwner+" -> "+key);
+        Plugin.Logger.LogDebug("[ITEM TRANSFER] "+transfer.AssignmentOwner+" -> "+key);
     }
     // Reject with the authoritative hand state and the request's action number,
     // matching vanilla rejection. Never synthesize a successful pickup first.

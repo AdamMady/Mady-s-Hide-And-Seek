@@ -174,7 +174,7 @@ public sealed partial class HideAndSeekTester
     }
     void AddDebugBeam(List<Vector3> points,Color color)
     {
-        if(points.Count<2)return;GameObject go;LineRenderer line;if(debugBeamCursor<debugBorderBeams.Count&&debugBorderBeams[debugBeamCursor]!=null){go=debugBorderBeams[debugBeamCursor];line=go.GetComponent<LineRenderer>();}else{go=new GameObject("HNS Setup Border Beam");line=go.AddComponent<LineRenderer>();if(debugBeamCursor<debugBorderBeams.Count)debugBorderBeams[debugBeamCursor]=go;else debugBorderBeams.Add(go);Plugin.Logger.LogInfo("[PREVIEW] allocated reusable border beam");}debugBeamCursor++;line.useWorldSpace=true;line.positionCount=points.Count+1;line.startWidth=.05f;line.endWidth=.05f;line.startColor=color;line.endColor=color;
+        if(points.Count<2)return;GameObject go;LineRenderer line;if(debugBeamCursor<debugBorderBeams.Count&&debugBorderBeams[debugBeamCursor]!=null){go=debugBorderBeams[debugBeamCursor];line=go.GetComponent<LineRenderer>();}else{go=new GameObject("HNS Setup Border Beam");line=go.AddComponent<LineRenderer>();if(debugBeamCursor<debugBorderBeams.Count)debugBorderBeams[debugBeamCursor]=go;else debugBorderBeams.Add(go);Plugin.Logger.LogDebug("[PREVIEW] allocated reusable border beam");}debugBeamCursor++;line.useWorldSpace=true;line.positionCount=points.Count+1;line.startWidth=.05f;line.endWidth=.05f;line.startColor=color;line.endColor=color;
         if(debugBeamMaterial==null){var shader=Shader.Find("Sprites/Default");if(shader!=null)debugBeamMaterial=new Material(shader);}if(debugBeamMaterial!=null)line.material=debugBeamMaterial;
         for(int i=0;i<points.Count;i++)line.SetPosition(i,points[i]+Vector3.up*.15f);line.SetPosition(points.Count,points[0]+Vector3.up*.15f);
     }

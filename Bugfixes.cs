@@ -16,10 +16,10 @@ public sealed partial class HideAndSeekTester
     readonly HashSet<string> itemRolls=new();
     float lastItemChance=float.NaN;
     readonly Dictionary<string,float> nextAuditLog=new();
-    void AuditLog(string key,string message)
+    void AuditLog(string key,string message,bool warning=false)
     {
         if(nextAuditLog.TryGetValue(key,out var next)&&Time.unscaledTime<next)return;
-        nextAuditLog[key]=Time.unscaledTime+5f;Plugin.Logger.LogInfo(message);
+        nextAuditLog[key]=Time.unscaledTime+5f;if(warning)Plugin.Logger.LogWarning(message);else Plugin.Logger.LogDebug(message);
     }
 
     Dictionary<string,string> DraftState()=>new Dictionary<string,string>{
@@ -32,7 +32,7 @@ public sealed partial class HideAndSeekTester
         hasDraftStatusSign=values.TryGetValue("draft/sign",out var sign)&&TrySign(sign,out draftStatusSignPosition,out draftStatusSignYaw);
         draftEnforcementLights=!values.TryGetValue("draft/enforcementLights",out var lights)||!bool.TryParse(lights,out var enabled)||enabled;
         editingAreaIndex=values.TryGetValue("draft/editingArea",out var index)&&int.TryParse(index,out var parsed)?parsed:-1;
-        Plugin.Logger.LogInfo($"[DRAFT RESTORE] sign={hasDraftStatusSign} editingArea={editingAreaIndex+1} lights={draftEnforcementLights}");
+        Plugin.Logger.LogDebug($"[DRAFT RESTORE] sign={hasDraftStatusSign} editingArea={editingAreaIndex+1} lights={draftEnforcementLights}");
     }
 
     void AssignSeekerGear(PlayerCharacter player,string key)
@@ -43,7 +43,7 @@ public sealed partial class HideAndSeekTester
             foreach(var candidate in bells)if(candidate!=null&&!seekerBellAssignments.Values.ContainsProp(candidate)){seekerBellAssignments[key]=bell=candidate;break;}
         if(belt!=null)EquipBelt(player,belt);
         if(bell!=null)Stow(player,bell);
-        Plugin.Logger.LogInfo($"[GEAR RESERVATION] player={key} belt={belt?.name} bell={bell?.name}");
+        Plugin.Logger.LogDebug($"[GEAR RESERVATION] player={key} belt={belt?.name} bell={bell?.name}");
     }
 
     // A reserved worker is excluded from transport until its item has been released.
@@ -71,7 +71,7 @@ public sealed partial class HideAndSeekTester
 
         var holder=FindHolder(prop);
         itemStorageJobs[prop]=new ItemStorageJob{Prop=prop,OriginalHolder=holder,NeedsSnatch=holder!=null||normalItemAssignments.Values.ContainsProp(prop)||lockedSpeakerAssignments.Values.ContainsProp(prop)};
-        Plugin.Logger.LogInfo($"[ITEM STORAGE] queued {prop.name} netId={prop.netId}");
+        Plugin.Logger.LogDebug($"[ITEM STORAGE] queued {prop.name} netId={prop.netId}");
     }
 
     void ProcessItemStorage()
@@ -102,7 +102,7 @@ public sealed partial class HideAndSeekTester
                     if(Time.unscaledTime>=job.NextLog){Plugin.Logger.LogWarning($"[ITEM STORAGE] waiting for free manager: {prop.name}; transports={activeTransports.Count}");job.NextLog=Time.unscaledTime+5f;}
                     job.NextAttempt=Time.unscaledTime+.05f;continue;
                 }
-                Plugin.Logger.LogInfo($"[ITEM STORAGE] managerId={job.Worker.playerNetworking.netId} reserved for {prop.name} netId={prop.netId}");
+                Plugin.Logger.LogDebug($"[ITEM STORAGE] managerId={job.Worker.playerNetworking.netId} reserved for {prop.name} netId={prop.netId}");
             }
             if(!CanTransportPlayer(job.Worker)){ReleaseStorageWorker(job);job.Attempts=0;continue;}
             // Managers are removed from allPlayerCharacters, so FindHolder
@@ -129,7 +129,7 @@ public sealed partial class HideAndSeekTester
             }
             if(holder!=null&&holder!=job.Worker)
             {
-                Plugin.Logger.LogWarning($"[ITEM STORAGE] holder changed for {prop.name}; retrying native snatch");
+                Plugin.Logger.LogDebug($"[ITEM STORAGE] holder changed for {prop.name}; retrying native snatch");
                 job.Attempts=0;job.Stored=false;job.NextAttempt=Time.unscaledTime+.25f;continue;
             }
             if(!job.Stored||holder==job.Worker)
@@ -140,20 +140,20 @@ public sealed partial class HideAndSeekTester
                 AuditLog("storage-drop:"+prop.GetInstanceID(),$"[ITEM STORAGE] awaiting manager drop: {prop.name} netId={prop.netId} managerId={job.Worker.playerNetworking.netId}");continue;
             }
             PlaceLoose(prop,MarkerStorage(),Quaternion.identity);
-            Plugin.Logger.LogInfo($"[ITEM STORAGE] completed {prop.name} netId={prop.netId} managerId={job.Worker.playerNetworking.netId}; attempts={job.Attempts}");
+            Plugin.Logger.LogDebug($"[ITEM STORAGE] completed {prop.name} netId={prop.netId} managerId={job.Worker.playerNetworking.netId}; attempts={job.Attempts}");
             ReleaseStorageWorker(job);itemStorageJobs.Remove(prop);
             }
             catch(Exception ex)
             {
                 job.NextAttempt=Time.unscaledTime+.5f;
-                AuditLog("storage-error:"+pair.Key.GetHashCode(),$"[ITEM STORAGE ERROR] item={prop?.name} attempts={job.Attempts} stored={job.Stored}; retry in 0.5s: {ex.GetBaseException().Message}");
+                AuditLog("storage-error:"+pair.Key.GetHashCode(),$"[ITEM STORAGE ERROR] item={prop?.name} attempts={job.Attempts} stored={job.Stored}; retry in 0.5s: {ex.GetBaseException().Message}",true);
             }
         }
         if(itemStorageJobs.Count!=0||Time.unscaledTime<nextStorageCompletion)return;
         if(cleanupPending)
         {
             try{RestoreBorrowedProps();cleanupPending=false;}
-            catch(Exception ex){nextStorageCompletion=Time.unscaledTime+.5f;AuditLog("cleanup-error","[CLEANUP ERROR] retry in 0.5s: "+ex.GetBaseException().Message);}
+            catch(Exception ex){nextStorageCompletion=Time.unscaledTime+.5f;AuditLog("cleanup-error","[CLEANUP ERROR] retry in 0.5s: "+ex.GetBaseException().Message,true);}
         }
         else if(finalThirtyPending){finalThirtyPending=false;if(phase==Phase.Seeking)GiveFinalSpeakers();}
     }

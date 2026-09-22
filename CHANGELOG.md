@@ -28,7 +28,7 @@
 - Prevented area deletion during rounds and corrected active-area indices after deletion.
 - Cleared live play-sign placement when its saved position is cleared.
 - Reused object-preview border beams instead of repeatedly destroying and recreating them.
-- Added targeted item, transport, preset, sign, and session diagnostics. Repeated enforcement messages are throttled.
+- Moved routine pickup, item, transport, and setup traces to Debug logging; round events and actionable warnings remain visible.
 
 ## 1.0.3
 

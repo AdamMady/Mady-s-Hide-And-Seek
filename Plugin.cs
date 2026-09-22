@@ -438,7 +438,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         var clone=UnityEngine.Object.Instantiate(prefab);clone.SetActive(false);clone.name="HNS Manager "+label;clone.AddComponent<DummyManagerMarker>();foreach(var voice in clone.GetComponentsInChildren<PlayerVoicePlaybackControl>(true))if(voice!=null)voice.enabled=false;
             var player=clone.GetComponentInChildren<PlayerCharacter>(true);if(player==null){UnityEngine.Object.Destroy(clone);throw new Exception("PlayerCharacter missing from prefab.");}var networking=player.playerNetworking;string dummyId="HNS_DUMMY_"+(++dummySerial).ToString(CultureInfo.InvariantCulture);if(networking!=null)networking.identifier=dummyId;clone.transform.position=position;clone.SetActive(true);NetworkServer.Spawn(clone);if(networking!=null)networking.Networkidentifier=dummyId;objectList.Add(clone);dummyManagers.Add(player);SetManagerGold(player);DirectLocalTeleport(player,position);
             if(player.rb!=null){player.rb.isKinematic=false;player.rb.useGravity=false;player.rb.constraints=RigidbodyConstraints.FreezeAll;player.rb.linearVelocity=Vector3.zero;player.rb.angularVelocity=Vector3.zero;}
-            var identity=clone.GetComponent<NetworkIdentity>();bool authority=identity!=null&&NetworkServer.localConnection!=null&&identity.AssignClientAuthority(NetworkServer.localConnection);Plugin.Logger.LogInfo($"[DUMMY MANAGER] {label} netId={(identity==null?0:identity.netId)} authority={authority} position={position}");return player;
+            var identity=clone.GetComponent<NetworkIdentity>();bool authority=identity!=null&&NetworkServer.localConnection!=null&&identity.AssignClientAuthority(NetworkServer.localConnection);Plugin.Logger.LogDebug($"[DUMMY MANAGER] {label} netId={(identity==null?0:identity.netId)} authority={authority} position={position}");return player;
         }
         finally{CreatingDummyManager=false;}
     }
@@ -641,7 +641,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         buoys.RemoveAll(prop=>prop==null);if(Prop.allProps==null||buoys.Count>=wanted)return;int before=buoys.Count;
         foreach(var prop in Prop.allProps)if(prop!=null&&!buoys.ContainsProp(prop)&&IsBuoyMarker(prop)){buoys.Add(prop);RememberOrigin(prop);}
         if(!poolBuilt){Vector3 storage=MarkerStorage();buoys.Sort((a,b)=>(a.transform.position-storage).sqrMagnitude.CompareTo((b.transform.position-storage).sqrMagnitude));}
-        if(buoys.Count!=before)Plugin.Logger.LogInfo($"[POOL] Indexed {buoys.Count} buoy markers; stored markers prioritized.");
+        if(buoys.Count!=before)Plugin.Logger.LogDebug($"[POOL] Indexed {buoys.Count} buoy markers; stored markers prioritized.");
     }
     static bool IsBuoyMarker(Prop prop)=>prop!=null&&(prop.name.StartsWith("BuoyProp",StringComparison.Ordinal)||prop.name.StartsWith("BuoyLight",StringComparison.Ordinal)||prop.name.StartsWith("BuoyRedProp",StringComparison.Ordinal));
     int StaticBorderCount()=>playBorder.Count+seekerBorder.Count+endBorder.Count+(spawnDraftLights?borderPoints.Count:0);
@@ -736,7 +736,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void MaintainHiderItems()
     {
-        if(lastItemChance!=Plugin.RandomItemChance.Value){lastItemChance=Plugin.RandomItemChance.Value;Plugin.Logger.LogInfo($"[ITEM CHANCE] now={lastItemChance}% existingAssignments={normalItemAssignments.Count}; existing ownership preserved");}
+        if(lastItemChance!=Plugin.RandomItemChance.Value){lastItemChance=Plugin.RandomItemChance.Value;Plugin.Logger.LogDebug($"[ITEM CHANCE] now={lastItemChance}% existingAssignments={normalItemAssignments.Count}; existing ownership preserved");}
         if(finalThirtyTriggered)return;
         foreach(var pair in new List<KeyValuePair<string,Prop>>(normalItemAssignments))
         {
@@ -748,7 +748,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             {
                 string holderKey=Key(holder);if(normalItemAssignments.ContainsKey(holderKey)||lockedSpeakerAssignments.ContainsKey(holderKey)){GiveHeldItem(owner,pair.Value);continue;}
                 if(phase==Phase.SettingUp){GiveHeldItem(owner,pair.Value);continue;}
-                normalItemAssignments.Remove(pair.Key);normalItemAssignments[holderKey]=pair.Value;Plugin.Logger.LogInfo($"[ITEM TRANSFER RECONCILE] {pair.Key} -> {holderKey} item={pair.Value.name}");continue;
+                normalItemAssignments.Remove(pair.Key);normalItemAssignments[holderKey]=pair.Value;Plugin.Logger.LogDebug($"[ITEM TRANSFER RECONCILE] {pair.Key} -> {holderKey} item={pair.Value.name}");continue;
             }
             AuditLog("item-return:"+pair.Key,$"[ITEM ENFORCE] player={pair.Key} required={pair.Value?.name} observed={owner.hands?.heldProp?.name} holder={Key(holder)} phase={phase}");GiveHeldItem(owner,pair.Value);
         }
@@ -869,11 +869,11 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void TryAssignRandomHiderItem(string key)
     {
         if(!itemRolls.Add(key))return;
-        Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} chance={Plugin.RandomItemChance.Value}% phase={phase}");
-        if(UnityEngine.Random.value>=Mathf.Clamp01(Plugin.RandomItemChance.Value/100f)){Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} result=no item");return;}var categories=AvailableItemCategories();if(categories.Count==0){Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} result=pool exhausted");return;}
+        Plugin.Logger.LogDebug($"[ITEM ROLL] player={key} chance={Plugin.RandomItemChance.Value}% phase={phase}");
+        if(UnityEngine.Random.value>=Mathf.Clamp01(Plugin.RandomItemChance.Value/100f)){Plugin.Logger.LogDebug($"[ITEM ROLL] player={key} result=no item");return;}var categories=AvailableItemCategories();if(categories.Count==0){Plugin.Logger.LogDebug($"[ITEM ROLL] player={key} result=pool exhausted");return;}
         string category=categories[UnityEngine.Random.Range(0,categories.Count)];var choices=CategoryItems(category);if(choices.Count==0)return;
         normalItemAssignments[key]=choices[UnityEngine.Random.Range(0,choices.Count)];
-        Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} category={category} item={normalItemAssignments[key].name}");
+        Plugin.Logger.LogDebug($"[ITEM ROLL] player={key} category={category} item={normalItemAssignments[key].name}");
     }
     List<string> AvailableItemCategories()
     {
@@ -889,7 +889,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(player==null||!setupItemsGiven.Add(Key(player)))return;
         string key=Key(player);
         if(seekers.Contains(key)){AssignSeekerGear(player,key);return;}
-        if(finalThirtyTriggered){if(lockedSpeakerAssignments.TryGetValue(key,out var speaker)&&!caught.Contains(key))GiveHeldItem(player,speaker);Plugin.Logger.LogInfo($"[ITEM REJOIN] final-period player={key}; normal allocation skipped");return;}
+        if(finalThirtyTriggered){if(lockedSpeakerAssignments.TryGetValue(key,out var speaker)&&!caught.Contains(key))GiveHeldItem(player,speaker);Plugin.Logger.LogDebug($"[ITEM REJOIN] final-period player={key}; normal allocation skipped");return;}
         if(hiders.Contains(key)&&!caught.Contains(key))
         {
             if(!normalItemAssignments.TryGetValue(key,out var item)){TryAssignRandomHiderItem(key);normalItemAssignments.TryGetValue(key,out item);}
@@ -1000,7 +1000,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             if(borderCooldown.TryGetValue(key,out var until)&&Time.unscaledTime<until)continue;
             if(!TryNearestRecovery(position,recoveries,zone,out var returnTarget)){borderCooldown[key]=Time.unscaledTime+1f;continue;}
             if(!AllowRecovery(key))continue;
-            borderCooldown[key]=Time.unscaledTime+.1f;ReturnWarningBuoy(key);Teleport(p,returnTarget,false,true);Plugin.Logger.LogInfo("[BORDER] returning "+key+" to safe point "+returnTarget);}
+            borderCooldown[key]=Time.unscaledTime+.1f;ReturnWarningBuoy(key);Teleport(p,returnTarget,false,true);Plugin.Logger.LogDebug("[BORDER] returning "+key+" to safe point "+returnTarget);}
     }
     internal static void NoteBrushPickup(PlayerHeldInformation held)
     {
@@ -1191,7 +1191,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(!ActiveHost||sign==null||!Instance.expectedSignText.TryGetValue(sign.netId,out var expected))return false;
         var attempted=NetworkReaderExtensions.ReadString(reader);
         var author=NetworkReaderExtensions.ReadString(reader);
-        if(attempted!=expected)Plugin.Logger.LogInfo($"[SIGN TEXT BLOCK] netId={sign.netId} restored managed text");
+        if(attempted!=expected)Instance.AuditLog("sign-text:"+sign.netId,$"[SIGN TEXT BLOCK] netId={sign.netId} restored managed text");
         // Replay through the game's own text command so the editing client gets a
         // networked correction even when the host already holds the expected text.
         sign.UserCode_CmdSendNewText__String__String(expected,author);
@@ -1297,7 +1297,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(p==null||!NetworkServer.active||float.IsNaN(pos.x))return;
         if(p.playerNetworking!=null&&p.playerNetworking.isLocalPlayer)
         {
-            DirectLocalTeleport(p,pos);if(Vector3.Distance(p.transform.position,pos)<=1f)ConfirmSeekerDeployment(p,pos);if(borderReturn){borderCooldown[Key(p)]=Time.unscaledTime+.1f;if(TransportDestinationContains(new TransportRequest{Player=p,Target=pos}))recoveryAttempts.Remove(Key(p));}StabilizePlayer(p,borderReturn?.2f:.5f);if(phase==Phase.SettingUp&&roundSpawnPositions.TryGetValue(Key(p),out var setupTarget)&&Vector3.Distance(setupTarget,pos)<.1f){setupConfirmed.Add(Key(p));EquipAfterConfirmedTeleport(p);Plugin.Logger.LogInfo("[TRANSPORT] local setup confirmed "+Key(p));}
+            DirectLocalTeleport(p,pos);if(Vector3.Distance(p.transform.position,pos)<=1f)ConfirmSeekerDeployment(p,pos);if(borderReturn){borderCooldown[Key(p)]=Time.unscaledTime+.1f;if(TransportDestinationContains(new TransportRequest{Player=p,Target=pos}))recoveryAttempts.Remove(Key(p));}StabilizePlayer(p,borderReturn?.2f:.5f);if(phase==Phase.SettingUp&&roundSpawnPositions.TryGetValue(Key(p),out var setupTarget)&&Vector3.Distance(setupTarget,pos)<.1f){setupConfirmed.Add(Key(p));EquipAfterConfirmedTeleport(p);Plugin.Logger.LogDebug("[TRANSPORT] local setup confirmed "+Key(p));}
         }
         else QueueTransport(p,pos,"round teleport",borderReturn);
     }
@@ -1316,13 +1316,13 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         foreach(var active in activeTransports)if(active.Player==player)
         {
             if(active.Target==target&&active.BorderReturn==borderReturn)return;
-            Plugin.Logger.LogInfo($"[TRANSPORT RETARGET] player={Key(player)} stage={active.Stage} old={active.Target} new={target} reason={reason}");
+            Plugin.Logger.LogDebug($"[TRANSPORT RETARGET] player={Key(player)} stage={active.Stage} old={active.Target} new={target} reason={reason}");
             if(active.Worker?.hands?.heldCharacter!=null)ManagerDrop(active.Worker);
             active.Target=target;active.Reason=reason;active.BorderReturn=borderReturn;active.Stage=-1;active.Attempts=0;active.AirFallbackUsed=false;active.Confirmations=0;active.StableSince=0f;active.NextStage=Time.unscaledTime+.1f;
             active.Deadline=Time.unscaledTime+2f;return;
         }
         var request=new TransportRequest{Player=player,Target=target,Reason=reason,BorderReturn=borderReturn};if(borderReturn)transports.Enqueue(request);else priorityTransports.Enqueue(request);
-        Plugin.Logger.LogInfo($"[TRANSPORT] queued {Key(player)} -> {target} ({reason})");
+        Plugin.Logger.LogDebug($"[TRANSPORT] queued {Key(player)} -> {target} ({reason})");
     }
     void MaintainModNetworking()
     {
@@ -1439,7 +1439,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         var request=remoteClientTransport;if(request==null)return;var local=LocalPlayer();if(local==null||NetworkClient.connection==null||Time.unscaledTime>=request.Deadline){remoteClientTransport=null;return;}
         if(Vector3.Distance(local.transform.position,request.Target)<=1f)
         {
-            if(++request.Confirmations>=2){completedRemoteToken=request.Token;SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+request.Token.ToString(CultureInfo.InvariantCulture));Plugin.Logger.LogInfo($"[MOD TRANSPORT CLIENT] confirmed token={request.Token} target={request.Target}");remoteClientTransport=null;}return;
+            if(++request.Confirmations>=2){completedRemoteToken=request.Token;SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+request.Token.ToString(CultureInfo.InvariantCulture));Plugin.Logger.LogDebug($"[MOD TRANSPORT CLIENT] confirmed token={request.Token} target={request.Target}");remoteClientTransport=null;}return;
         }
         request.Confirmations=0;if(Time.unscaledTime<request.NextAttempt)return;request.NextAttempt=Time.unscaledTime+.1f;DirectLocalTeleport(local,request.Target);StabilizePlayer(local,request.BorderReturn?.35f:.5f);
     }
@@ -1461,7 +1461,11 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     {
         clientTransports.Remove(key);if(request?.Player!=null&&request.BorderReturn)borderCooldown[key]=Time.unscaledTime+(success?.1f:.25f);
         if(success&&request?.Player!=null){ConfirmSeekerDeployment(request.Player,request.Target);if(roundSpawnPositions.TryGetValue(key,out var setupTarget)&&HorizontalDistanceSquared(setupTarget,request.Target)<.01f){if(phase==Phase.SettingUp)setupConfirmed.Add(key);if(phase==Phase.SettingUp||phase==Phase.Hiding||phase==Phase.Seeking)EquipAfterConfirmedTeleport(request.Player);}}
-        if(request!=null)Plugin.Logger.LogInfo($"[MOD TRANSPORT] {(success?"complete":"failed")} {key} ({request.Reason}) attempts={request.Attempts}");
+        if(request!=null)
+        {
+            string message=$"[MOD TRANSPORT] {(success?"complete":"failed")} {key} ({request.Reason}) attempts={request.Attempts}";
+            if(success)Plugin.Logger.LogDebug(message);else AuditLog("mod-transport-failed:"+key,message,true);
+        }
     }
     void CancelDummyTransport(PlayerCharacter player)
     {
@@ -1509,7 +1513,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(request==null||!CanTransportPlayer(request.Player))return true;request.Worker=WorkerFor(request.Player,request.Target);if(request.Worker==null)return false;
         DirectLocalTeleport(request.Worker,request.Target);
         request.Stage=0;request.Attempts=0;request.Confirmations=0;request.StableSince=0f;request.NextStage=Time.unscaledTime;request.Deadline=Time.unscaledTime+.5f;activeTransports.Add(request);
-        Plugin.Logger.LogInfo($"[TRANSPORT] leased shared worker {standbyManagers.IndexOf(request.Worker)+1} to {Key(request.Player)}");return true;
+        Plugin.Logger.LogDebug($"[TRANSPORT] leased shared worker {standbyManagers.IndexOf(request.Worker)+1} to {Key(request.Player)}");return true;
     }
     PlayerCharacter WorkerFor(PlayerCharacter player,Vector3 target)
     {
@@ -1519,7 +1523,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void ProcessTransport(TransportRequest request)
     {
         if(request==null||Time.unscaledTime<request.NextStage)return;var worker=request.Worker;if(!CanTransportPlayer(request.Player)||!CanTransportPlayer(worker)){FinishTransport(request,false);return;}
-        if(request.LoggedStage!=request.Stage){request.LoggedStage=request.Stage;Plugin.Logger.LogInfo($"[TRANSPORT STAGE] player={Key(request.Player)} stage={request.Stage} worker={standbyManagers.IndexOf(worker)+1} playerPos={request.Player.transform.position} target={request.Target} held={worker.hands.heldCharacter==request.Player}");}
+        if(request.LoggedStage!=request.Stage){request.LoggedStage=request.Stage;Plugin.Logger.LogDebug($"[TRANSPORT STAGE] player={Key(request.Player)} stage={request.Stage} worker={standbyManagers.IndexOf(worker)+1} playerPos={request.Player.transform.position} target={request.Target} held={worker.hands.heldCharacter==request.Player}");}
         switch(request.Stage)
         {
             case -1:
@@ -1546,7 +1550,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
                 if(!arrived)
                 {
                     if(releasedFor<.25f){request.NextStage=Time.unscaledTime+.1f;break;}
-                    Plugin.Logger.LogWarning("[TRANSPORT] client correction left destination after release; player="+request.Player.transform.position+" target="+request.Target);FinishTransport(request,false);break;
+                    Plugin.Logger.LogDebug("[TRANSPORT] client correction left destination after release; player="+request.Player.transform.position+" target="+request.Target);FinishTransport(request,false);break;
                 }
                 float confirmationWindow=request.BorderReturn?.6f:2f;
                 if(releasedFor<confirmationWindow){request.NextStage=Time.unscaledTime+.1f;break;}
@@ -1588,12 +1592,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             request.AirFallbackUsed=true;request.Stage=0;request.Attempts=0;request.Confirmations=0;request.StableSince=0f;
             DirectLocalTeleport(request.Worker,request.Player.transform.position+Vector3.up*12f);
             request.NextStage=Time.unscaledTime+.5f;
-            Plugin.Logger.LogWarning("[TRANSPORT] Air pickup fallback for "+Key(request.Player)+" -> "+request.Target);
+            Plugin.Logger.LogDebug("[TRANSPORT] Air pickup fallback for "+Key(request.Player)+" -> "+request.Target);
             return;
         }
         if(request?.Worker?.hands?.heldCharacter!=null)ManagerDrop(request.Worker);if(request?.Worker!=null&&request.Stage<4)ReturnWorkerToStandby(request.Worker);activeTransports.Remove(request);if(request==null)return;
         if(request.Player!=null&&request.BorderReturn)borderCooldown[Key(request.Player)]=Time.unscaledTime+(success?.1f:.25f);if(success){ConfirmSeekerDeployment(request.Player,request.Target);StabilizePlayer(request.Player,request.BorderReturn?.2f:.5f);if(roundSpawnPositions.TryGetValue(Key(request.Player),out var setupTarget)&&Vector3.Distance(setupTarget,request.Target)<.1f){if(phase==Phase.SettingUp)setupConfirmed.Add(Key(request.Player));if(phase==Phase.SettingUp||phase==Phase.Hiding||phase==Phase.Seeking)EquipAfterConfirmedTeleport(request.Player);}}
-        Plugin.Logger.LogInfo($"[TRANSPORT] {(success?"complete":"failed")} {Key(request.Player)} ({request.Reason}) attempts={request.Attempts}");
+        Plugin.Logger.LogDebug($"[TRANSPORT] {(success?"complete":"failed")} {Key(request.Player)} ({request.Reason}) attempts={request.Attempts}");
     }
     void StabilizePlayer(PlayerCharacter player,float duration)
     {
