@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Required Notice: Copyright (c) 2026 AdamMady.
 // Required Notice: Original repository: https://github.com/AdamMady/Mady-s-Hide-And-Seek
 // Commercial use requires prior written permission from AdamMady.
@@ -38,23 +38,25 @@ public sealed partial class HideAndSeekTester
     internal static void StopSession(PlayerCharacter player){if(Instance!=null&&player==Instance.sessionLocal)Instance.ResetSession();}
     void ResetSession()
     {
+        if(sessionEnabled&&NetworkServer.active)RestoreSessionProps();
+        itemStorageJobs.Clear();itemRolls.Clear();nextAuditLog.Clear();finalThirtyPending=false;
         spawnReservations.Clear();corpsePlacementCandidates=null;
         if(sessionEnabled&&NetworkServer.active)foreach(var connection in new List<NetworkConnection>(moddedClients.Values))SendRaw(connection,"D|"+ModProtocol);
         if(NetworkServer.active)foreach(var item in new List<GameObject>(permanentDummyObjects))if(item!=null){var player=item.GetComponentInChildren<PlayerCharacter>(true);if(player?.hands?.heldCharacter!=null)ManagerDrop(player);DestroyDummy(item);}
         RestoreFairPlayMods();
         if((sessionEnabled||remoteSessionEnabled)&&SkyManager.initalized)SkyManager.ClearFixedTime();
-        sessionEnabled=false;remoteSessionEnabled=false;seekerDeployment=false;deployingSeekers.Clear();phase=Phase.Idle;remaining=0;poolBuilt=false;cleanupPending=false;cleanupItemReleaseAt=-1f;
+        sessionEnabled=false;remoteSessionEnabled=false;seekerDeployment=false;deployingSeekers.Clear();phase=Phase.Idle;remaining=0;poolBuilt=false;cleanupPending=false;
         foreach(var pair in fallProtectionUntil)if(pair.Key?.faller!=null)pair.Key.faller.ignoreFalling=false;
         fallProtectionUntil.Clear();ClearDebugBeams();showSpawnDebug=false;spawnDraftLights=false;
         permanentDummyObjects.Clear();dummyManagers.Clear();standbyManagers.Clear();goldApplied.Clear();
         priorityTransports.Clear();transports.Clear();activeTransports.Clear();clientTransports.Clear();moddedClients.Clear();failedModConnections.Clear();
-        pickupCorrectionUntil.Clear();propRefreshes.Clear();cleanupManagerItems.Clear();seekerBeltAssignments.Clear();seekerBellAssignments.Clear();normalItemAssignments.Clear();lockedSpeakerAssignments.Clear();
+        cleanupManagerItems.Clear();seekerBeltAssignments.Clear();seekerBellAssignments.Clear();normalItemAssignments.Clear();lockedSpeakerAssignments.Clear();
         seekers.Clear();hiders.Clear();caught.Clear();known.Clear();disconnected.Clear();setupConfirmed.Clear();setupItemsGiven.Clear();
         roundPlayers.Clear();roundSpawnPositions.Clear();borderCooldown.Clear();recoveryAttempts.Clear();disconnectDeadlines.Clear();trackedCorpses.Clear();corpseTargets.Clear();
         megaphones.Clear();walkies.Clear();flares.Clear();xrayGoggles.Clear();speakers.Clear();belts.Clear();bells.Clear();brushes.Clear();buoys.Clear();roundItemPool.Clear();propOrigins.Clear();
-        markerPositions.Clear();markerRotations.Clear();whiteboardOrigins.Clear();borderDriftChecks.Clear();warningBuoys.Clear();instructionSignProps.Clear();instructionSignBoards.Clear();
+        markerPositions.Clear();markerRotations.Clear();whiteboardOrigins.Clear();borderDriftChecks.Clear();warningBuoys.Clear();instructionSignProps.Clear();instructionSignBoards.Clear();expectedSignText.Clear();
         seekerBoardProp=null;endBoardProp=null;statusBoardProp=null;seekerBoard=null;endBoard=null;statusBoard=null;
-        modHelloSent=false;nextModHello=0f;completedRemoteToken=0;modLinkDisabled=false;lastSettingsPacket="";syncedHostSettings="";remoteHostSettings.Clear();remoteClientTransport=null;nextModNetworkCheck=0;nextSettingsSync=0;
+        modHelloSent=false;nextModHello=0f;completedRemoteToken=0;cancelledRemoteToken=0;modLinkDisabled=false;lastSettingsPacket="";syncedHostSettings="";remoteHostSettings.Clear();remoteClientTransport=null;nextModNetworkCheck=0;nextSettingsSync=0;
         status="Normal lobby. Press Setup to enable hide and seek.";
     }
     void SetupSession()
@@ -129,7 +131,11 @@ public sealed partial class HideAndSeekTester
     void LoadPreset()
     {
         if((phase!=Phase.Idle&&phase!=Phase.Ended)||activeTransports.Count>0||transports.Count>0||priorityTransports.Count>0||clientTransports.Count>0||cleanupPending){status="Finish round and teleports before loading preset.";return;}
-        var settings=PresetSettings();var previous=new string[settings.Length];for(int i=0;i<settings.Length;i++)previous[i]=settings[i].GetSerializedValue();
+        var settings=PresetSettings();var rollback=new Dictionary<ConfigEntryBase,string>();
+        foreach(var setting in settings)rollback[setting]=setting.GetSerializedValue();
+        foreach(var setting in DraftPresetSettings())rollback[setting]=setting.GetSerializedValue();
+        foreach(var setting in new[]{Plugin.AreaPoint,Plugin.HiderSpawnSlots,Plugin.PlayBorder,Plugin.PlayRecoveryPoints,Plugin.StatusSignTransform})rollback[setting]=setting.GetSerializedValue();
+        var draftBefore=DraftState();int previousArea=activeAreaIndex;string previousBaseline=setupBaseline;
         try
         {
             if(!string.Equals(loadedPresetName,presetName.Trim(),StringComparison.OrdinalIgnoreCase))AutosaveSetupChanges();
@@ -138,6 +144,7 @@ public sealed partial class HideAndSeekTester
             ClearPresetRuntimeState();
             foreach(var setting in settings)if(values.TryGetValue(setting.Definition.Section+"/"+setting.Definition.Key,out var value))setting.SetSerializedValue(value);
             foreach(var setting in DraftPresetSettings())if(values.TryGetValue(setting.Definition.Section+"/"+setting.Definition.Key,out var value))setting.SetSerializedValue(value);
+            RestoreDraftState(values);
             if(values.TryGetValue(Plugin.StatusSignTransform.Definition.Section+"/"+Plugin.StatusSignTransform.Definition.Key,out var oldStatusSign))Plugin.StatusSignTransform.SetSerializedValue(oldStatusSign);
             if(format=="1")
             {
@@ -145,14 +152,14 @@ public sealed partial class HideAndSeekTester
             }
             Start();if(poolBuilt){ReturnAllWarningBuoys();markerPositions.Clear();markerRotations.Clear();GrowPool();ClaimInstructionSigns();PositionMarkers();}if(sessionEnabled){ParkIdleWorkers();ApplyTime();}loadedPresetName=presetName.Trim();MarkSetupBaseline();status="Loaded preset: "+presetName;
         }
-        catch(Exception ex){for(int i=0;i<settings.Length;i++)settings[i].SetSerializedValue(previous[i]);Start();status="Preset load failed: "+ex.Message;}
+        catch(Exception ex){foreach(var pair in rollback)pair.Key.SetSerializedValue(pair.Value);Start();RestoreDraftState(draftBefore);activeAreaIndex=previousArea;setupBaseline=previousBaseline;if(poolBuilt)PositionMarkers();status="Preset load failed: "+ex.Message;Plugin.Logger.LogWarning("[PRESET ROLLBACK] configuration and drafts restored: "+ex.Message);}
     }
     [Il2CppInterop.Runtime.Attributes.HideFromIl2Cpp]
     ConfigEntryBase[] DraftPresetSettings()=>new ConfigEntryBase[]{Plugin.DraftSpawnSlots,Plugin.BorderPoints,Plugin.DraftRecoveryPoints};
     [Il2CppInterop.Runtime.Attributes.HideFromIl2Cpp]
     ConfigEntryBase[] SetupStateSettings()=>new ConfigEntryBase[]{Plugin.PlayAreas,Plugin.SeekerPoint,Plugin.EndPoint,Plugin.DummyStandbySlots,Plugin.SeekerSpawnSlots,Plugin.EndSpawnSlots,Plugin.GearStoragePoint,Plugin.SeekerBorder,Plugin.EndBorder,Plugin.InstructionSigns,Plugin.InstructionSignText,Plugin.SeekerSignTransform,Plugin.EndSignTransform,Plugin.DraftSpawnSlots,Plugin.BorderPoints,Plugin.DraftRecoveryPoints};
-    Dictionary<string,string> PresetValues(){var values=new Dictionary<string,string>{{"format","2"}};foreach(var setting in PresetSettings())values[setting.Definition.Section+"/"+setting.Definition.Key]=setting.GetSerializedValue();foreach(var setting in DraftPresetSettings())values[setting.Definition.Section+"/"+setting.Definition.Key]=setting.GetSerializedValue();return values;}
-    string SetupFingerprint(){var text=new StringBuilder();foreach(var setting in SetupStateSettings())text.Append(setting.Definition.Section).Append('/').Append(setting.Definition.Key).Append('=').Append(setting.GetSerializedValue()).Append('\n');return text.ToString();}
+    Dictionary<string,string> PresetValues(){var values=new Dictionary<string,string>{{"format","2"}};foreach(var setting in PresetSettings())values[setting.Definition.Section+"/"+setting.Definition.Key]=setting.GetSerializedValue();foreach(var setting in DraftPresetSettings())values[setting.Definition.Section+"/"+setting.Definition.Key]=setting.GetSerializedValue();foreach(var pair in DraftState())values[pair.Key]=pair.Value;return values;}
+    string SetupFingerprint(){var text=new StringBuilder();foreach(var setting in SetupStateSettings())text.Append(setting.Definition.Section).Append('/').Append(setting.Definition.Key).Append('=').Append(setting.GetSerializedValue()).Append('\n');foreach(var pair in DraftState())text.Append(pair.Key).Append('=').Append(pair.Value).Append('\n');return text.ToString();}
     void MarkSetupBaseline()=>setupBaseline=SetupFingerprint();
     void AutosaveSetupChanges()
     {

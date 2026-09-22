@@ -24,7 +24,7 @@ public enum LockedTime { Natural,Sunrise,Day,Sunset,Night }
 [BepInPlugin(Guid, Name, Version)]
 public sealed class Plugin : BasePlugin
 {
-    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.0.4";
+    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.1.0";
     internal const string DiscordUrl="https://discord.gg/5z3WvVhxCf";
     internal static ConfigEntry<KeyCode> MenuKey,SetupKey;
     internal static ConfigEntry<float> HideTime, RoundTime, Radius, HiderHeight, ReturnInset, EndRadius, RandomItemChance;
@@ -152,6 +152,17 @@ static class RoundPropPickupBlock
         HideAndSeekTester.EnforceExclusiveHands(__instance.playerCharacter);
     }
 }
+
+[HarmonyPatch(typeof(PeckEffectTextInput),nameof(PeckEffectTextInput.InvokeUserCode_CmdSendNewText__String__String))]
+[HarmonyPriority(Priority.First)]
+static class RoundSignTextBlock
+{
+    static bool Prefix(NetworkBehaviour __0,NetworkReader __1)
+    {
+        var sign=__0?.TryCast<PeckEffectTextInput>();
+        return sign==null||!HideAndSeekTester.RejectSignEdit(sign,__1);
+    }
+}
 [HarmonyPatch(typeof(PlayerNetworking),nameof(PlayerNetworking.CmdSetGestureLeftPoint))]
 static class LocalSeekerPointCommandPatch
 {
@@ -168,12 +179,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
 {
     enum Phase { Idle,SettingUp,Hiding,Seeking,Ended }
     readonly List<Prop> megaphones=new(),walkies=new(),flares=new(),xrayGoggles=new(),speakers=new(),belts=new(),bells=new(),brushes=new(),buoys=new(),instructionSignProps=new(),roundItemPool=new();
-    readonly Dictionary<Prop,PropOrigin> propOrigins=new();
-    readonly Dictionary<Prop,Vector3> markerPositions=new();
-    readonly Dictionary<Prop,Quaternion> markerRotations=new();
-    readonly Dictionary<Prop,PropOrigin> whiteboardOrigins=new();
-    readonly Dictionary<Prop,int> borderDriftChecks=new();
-    readonly Dictionary<PlayerNetworking,float> pickupCorrectionUntil=new();
+    readonly Dictionary<Prop,PropOrigin> propOrigins=new(NativeIdentity<Prop>.Instance);
+    readonly Dictionary<Prop,Vector3> markerPositions=new(NativeIdentity<Prop>.Instance);
+    readonly Dictionary<Prop,Quaternion> markerRotations=new(NativeIdentity<Prop>.Instance);
+    readonly Dictionary<Prop,PropOrigin> whiteboardOrigins=new(NativeIdentity<Prop>.Instance);
+    readonly Dictionary<Prop,int> borderDriftChecks=new(NativeIdentity<Prop>.Instance);
+
     readonly Dictionary<string,List<Prop>> warningBuoys=new();
     readonly Dictionary<string,NetworkConnection> moddedClients=new();
     readonly Dictionary<string,ClientTransportRequest> clientTransports=new();
@@ -204,11 +215,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     readonly List<Vector3> hiderSpawnSlots=new(),seekerSpawnSlots=new(),endSpawnSlots=new(),standbySlots=new(),spawnPoints=new(),borderPoints=new(),playBorder=new(),seekerBorder=new(),endBorder=new(),recoveryPoints=new(),playRecoveryPoints=new(),instructionSignPositions=new();
     readonly List<float> instructionSignYaws=new();
     readonly List<PeckEffectTextInput> instructionSignBoards=new();
+    readonly Dictionary<uint,string> expectedSignText=new();
     bool simpleVisible,setupVisible,poolBuilt,enforceBorder=true,cleanupPending,showSpawnDebug,spawnDraftLights,finalThirtyTriggered,menuCursorActive,previousCursorVisible;
-    float cleanupItemReleaseAt=-1f;
-    int cleanupSnatchAttempts;
-    readonly Dictionary<PlayerCharacter,Prop> cleanupManagerItems=new();
-    readonly Dictionary<Prop,float> brushPickupGraceUntil=new();
+
+
+    readonly Dictionary<PlayerCharacter,Prop> cleanupManagerItems=new(NativeIdentity<PlayerCharacter>.Instance);
+    readonly Dictionary<Prop,float> brushPickupGraceUntil=new(NativeIdentity<Prop>.Instance);
     CursorLockMode previousCursorLock;
     Rect simpleWindow=new(25,55,500,560),setupWindow=new(540,55,650,760); Vector2 simpleScroll,setupScroll;
     Vector3 center,seekerSpawn,endSpawn,gearStorage,seekerSignPosition,endSignPosition,statusSignPosition; float seekerSignYaw,endSignYaw,statusSignYaw; bool hasCenter,hasSeeker,hasEndSpawn,hasGearStorage,hasSeekerSign,hasEndSign,hasStatusSign;
@@ -219,15 +231,15 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     const ushort ModMessageId=0xE7A1;
     const string ModProtocol="2";
     float nextModHello;
-    int completedRemoteToken;
+    int completedRemoteToken,cancelledRemoteToken;
     string syncedHostSettings="",lastSettingsPacket="";
     RemoteClientTransport remoteClientTransport;
     string status="Save positions, build pool once, start round.";
     Prop seekerBoardProp,endBoardProp,statusBoardProp;
     PeckEffectTextInput seekerBoard,endBoard,statusBoard;
     readonly struct PropOrigin{public readonly Vector3 Position;public readonly Quaternion Rotation;public readonly bool Gravity,Kinematic;public PropOrigin(Prop p){Position=p.transform.position;Rotation=p.transform.rotation;Gravity=p.rb!=null&&p.rb.useGravity;Kinematic=p.rb!=null&&p.rb.isKinematic;}}
-    sealed class TransportRequest{public PlayerCharacter Player,Worker;public Vector3 Target;public string Reason;public float Deadline,NextStage,StableSince;public int Attempts,Confirmations,Stage;public bool BorderReturn,AirFallbackUsed;}
-    sealed class ClientTransportRequest{public PlayerCharacter Player;public Vector3 Target;public string Reason;public float NextSend;public int Token,Attempts;public bool BorderReturn;}
+    sealed class TransportRequest{public PlayerCharacter Player,Worker;public Vector3 Target;public string Reason;public float Deadline,NextStage,StableSince;public int Attempts,Confirmations,Stage;public int LoggedStage=int.MinValue;public bool BorderReturn,AirFallbackUsed;}
+    sealed class ClientTransportRequest{public PlayerCharacter Player;public Vector3 Target;public string Reason;public float NextSend;public int Token,Attempts;public bool BorderReturn,Acknowledged;}
     sealed class RemoteClientTransport{public Vector3 Target;public float Deadline,NextAttempt;public int Token,Confirmations;public bool BorderReturn;}
     public HideAndSeekTester(IntPtr pointer):base(pointer){}
     internal static HideAndSeekTester Instance;
@@ -241,28 +253,24 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     internal static bool ShouldBlockPropPickup(PlayerNetworking actor,PlayerHeldInformation held)
     {
         var instance=Instance;if(!ActiveHost||!instance.poolBuilt||actor==null||IsDummyManager(actor.playerCharacter)||!held.hasProp)return false;
-        var prop=held.GetProp();if(prop==null)return false;if(instance.propRefreshes.ContainsKey(prop))return true;string key=Key(actor.playerCharacter);
+        var prop=held.GetProp();if(prop==null)return false;string key=Key(actor.playerCharacter);
         if(instance.normalItemAssignments.TryGetValue(key,out var assigned)&&assigned!=prop)return true;
         if(instance.lockedSpeakerAssignments.TryGetValue(key,out var locked)&&locked!=prop)return true;
-        if(instance.lockedSpeakerAssignments.ContainsValue(prop))return !instance.lockedSpeakerAssignments.TryGetValue(key,out var own)||own!=prop;
-        if(instance.normalItemAssignments.ContainsValue(prop)&&actor.playerCharacter.hands?.heldProp!=null&&actor.playerCharacter.hands.heldProp!=prop)return true;
-        if(instance.brushes.Contains(prop)||prop.name.StartsWith("SalonBrushProp",StringComparison.Ordinal))return false;
+        if(instance.lockedSpeakerAssignments.Values.ContainsProp(prop))return !instance.lockedSpeakerAssignments.TryGetValue(key,out var own)||own!=prop;
+        if(instance.itemStorageJobs.ContainsKey(prop))return true;
+        if(instance.phase==Phase.SettingUp&&instance.normalItemAssignments.Values.ContainsProp(prop)&&(!instance.normalItemAssignments.TryGetValue(key,out var setupItem)||setupItem!=prop))return true;
+        if(instance.normalItemAssignments.Values.ContainsProp(prop)&&actor.playerCharacter.hands?.heldProp!=null&&actor.playerCharacter.hands.heldProp!=prop)return true;
+        if(instance.brushes.ContainsProp(prop)||prop.name.StartsWith("SalonBrushProp",StringComparison.Ordinal))return false;
         if(instance.seekers.Contains(key))return true;
-        if(instance.normalItemAssignments.ContainsValue(prop))return !instance.hiders.Contains(key)||instance.caught.Contains(key);
-        if(instance.belts.Contains(prop)||instance.bells.Contains(prop)||instance.buoys.Contains(prop)||instance.IsSign(prop)||instance.whiteboardOrigins.ContainsKey(prop))return true;
+        if(instance.normalItemAssignments.Values.ContainsProp(prop))return !instance.hiders.Contains(key)||instance.caught.Contains(key);
+        if(instance.belts.ContainsProp(prop)||instance.bells.ContainsProp(prop)||instance.buoys.ContainsProp(prop)||instance.IsSign(prop)||instance.whiteboardOrigins.ContainsKey(prop))return true;
         return prop.name!="MegaphoneProp"||!instance.hiders.Contains(key)||instance.caught.Contains(key);
     }
     internal static void RejectProtectedPropPickup(PlayerNetworking actor,PlayerHeldInformation rejected,PickupSnapshot repair)
     {
         if(actor==null||!NetworkServer.active)return;
-        // OnSetHeld ignores corrections older than the owner's predicted action number.
-        // Keep the empty state through a network tick before required items are returned.
-        var correction=PlayerHeldInformation.DropFromSnatch();
-        correction.actionNumber=Mathf.Max(actor.playerHeldInformation.actionNumber,rejected.actionNumber)+1;
-        actor.NetworkplayerHeldInformation=correction;
-        if(actor.isLocalPlayer&&actor.playerCharacter?.hands?.heldProp!=null)actor.playerCharacter.hands.Drop(correction);
-        Instance.pickupCorrectionUntil[actor]=Time.unscaledTime+.3f;
-        BroadcastSnapshot(actor);Instance.BeginPropRepair(repair);
+        try{CorrectPredictedPickup(actor,rejected,repair?.Prop??rejected.GetProp());}
+        catch(Exception ex){Plugin.Logger.LogWarning("[PICKUP ROLLBACK ERROR] "+Key(actor.playerCharacter)+": "+ex.GetBaseException().Message);}
     }
     void Awake(){Instance=this;}
 
@@ -279,7 +287,8 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(!Plugin.Enabled.Value){simpleVisible=false;setupVisible=false;SyncMenuCursor();if(sessionEnabled||remoteSessionEnabled)ResetSession();return;}
         if(!NetworkClient.active||!NetworkClient.isConnected){simpleVisible=false;setupVisible=false;SyncMenuCursor();return;}
         if(!GameTextInputActive()&&Input.GetKeyDown(Plugin.MenuKey.Value)) simpleVisible=!simpleVisible;
-        if(!GameTextInputActive()&&Input.GetKeyDown(Plugin.SetupKey.Value)) setupVisible=!setupVisible;
+        if(phase==Phase.SettingUp||phase==Phase.Hiding||phase==Phase.Seeking)setupVisible=false;
+        else if(!GameTextInputActive()&&Input.GetKeyDown(Plugin.SetupKey.Value))setupVisible=!setupVisible;
         SyncMenuCursor();
 
         MaintainModNetworking();
@@ -291,15 +300,11 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         KeepDummyOutOfRoster();
         UpdateFallProtection();
         ProtectManager();
-        ProcessPickupCorrections();ProcessPropRepairs();
+
+        ProcessItemStorage();
         ProcessClientTransports();
         ProcessTransport();
         if(poolBuilt&&Time.unscaledTime>=nextMarkerPin){nextMarkerPin=Time.unscaledTime+.05f;MaintainMarkers();}
-        if(cleanupPending&&(cleanupItemReleaseAt>=0f||(activeTransports.Count==0&&clientTransports.Count==0&&priorityTransports.Count==0&&transports.Count==0)))
-        {
-            if(cleanupItemReleaseAt<0f){PrepareBorrowedPropRelease();cleanupSnatchAttempts=0;RepeatCleanupSnatch();cleanupItemReleaseAt=Time.unscaledTime+.05f;}
-            else if(Time.unscaledTime>=cleanupItemReleaseAt){if(cleanupSnatchAttempts<10){RepeatCleanupSnatch();cleanupItemReleaseAt=Time.unscaledTime+.05f;}else{cleanupPending=false;cleanupItemReleaseAt=-1f;RestoreBorrowedProps();}}
-        }
         if(phase==Phase.Ended){if(hasEndSpawn&&Time.unscaledTime>=nextScan){nextScan=Time.unscaledTime+.05f;HandleConnections();MaintainCorpses();EnforceEndArea();}return;}
         if(phase==Phase.SettingUp)
         {
@@ -329,7 +334,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void OnGUI()
     {
         if(simpleVisible)simpleWindow=GUI.Window(730921,simpleWindow,(GUI.WindowFunction)DrawSimple,"Mady's HideNSeek");
-        if(setupVisible)setupWindow=GUI.Window(730922,setupWindow,(GUI.WindowFunction)DrawSetup,"Mady's HideNSeek Setup");
+        if(setupVisible&&phase!=Phase.SettingUp&&phase!=Phase.Hiding&&phase!=Phase.Seeking)setupWindow=GUI.Window(730922,setupWindow,(GUI.WindowFunction)DrawSetup,"Mady's HideNSeek Setup");
         if(showSpawnDebug)DrawSpawnDebug();
     }
     void DrawSimple(int id)
@@ -558,7 +563,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     {
         if(!ActiveHost){status="Press Setup in F9 first.";return;}if(!hasEndSpawn){status="Save end area first.";return;}if(poolBuilt){status="Pool already ready.";return;}
         try{
-            buoys.Clear();instructionSignProps.Clear();instructionSignBoards.Clear();whiteboardOrigins.Clear();seekerBoardProp=null;endBoardProp=null;statusBoardProp=null;seekerBoard=null;endBoard=null;statusBoard=null;
+            buoys.Clear();instructionSignProps.Clear();instructionSignBoards.Clear();expectedSignText.Clear();whiteboardOrigins.Clear();seekerBoardProp=null;endBoardProp=null;statusBoardProp=null;seekerBoard=null;endBoard=null;statusBoard=null;
             if(Prop.allProps!=null)foreach(var prop in Prop.allProps)if(prop!=null&&prop.GetComponentInChildren<PeckEffectTextInput>(true)!=null)whiteboardOrigins[prop]=new PropOrigin(prop);
             GrowPool();
             var boards=new List<Prop>();ClaimProps("SignProp center",2+Mathf.Min(1,instructionSignPositions.Count),boards);if(boards.Count>0)seekerBoardProp=boards[0];if(boards.Count>1)endBoardProp=boards[1];if(boards.Count>2){instructionSignProps.Add(boards[2]);instructionSignBoards.Add(boards[2].GetComponentInChildren<PeckEffectTextInput>(true));}
@@ -568,7 +573,11 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             if(seekerBoardProp==null)throw new Exception("map lacks required whiteboard");
             seekerBoard=seekerBoardProp.GetComponentInChildren<PeckEffectTextInput>(true);
             if(endBoardProp!=null)endBoard=endBoardProp.GetComponentInChildren<PeckEffectTextInput>(true);
-            PositionMarkers();poolBuilt=true;status=$"Available: {megaphones.Count} megaphones, {walkies.Count} walkies, {flares.Count} flares, {xrayGoggles.Count} goggles, {speakers.Count} speakers, {belts.Count} belts, {bells.Count} bells, {(endBoard!=null?2:1)+instructionSignProps.Count+(statusBoard!=null?1:0)} boards, {buoys.Count} buoys.";Plugin.Logger.LogInfo("[POOL] "+status);
+            PositionMarkers();
+            SetBoard(seekerBoard,seekerBoard.NetworknetworkedText??"");
+            if(endBoard!=null)SetBoard(endBoard,endBoard.NetworknetworkedText??"");
+            if(statusBoard!=null)SetBoard(statusBoard,statusBoard.NetworknetworkedText??"");
+            poolBuilt=true;status=$"Available: {megaphones.Count} megaphones, {walkies.Count} walkies, {flares.Count} flares, {xrayGoggles.Count} goggles, {speakers.Count} speakers, {belts.Count} belts, {bells.Count} bells, {(endBoard!=null?2:1)+instructionSignProps.Count+(statusBoard!=null?1:0)} boards, {buoys.Count} buoys.";Plugin.Logger.LogInfo("[POOL] "+status);
         }catch(Exception ex){status="Pool failed: "+ex.Message;Plugin.Logger.LogError(ex);}
     }
     void GrowPool()
@@ -589,7 +598,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(Prop.allProps!=null)foreach(var prop in Prop.allProps)
         {
             if(target.Count>=wanted)break;
-            if(prop==null||target.Contains(prop)||prop.exclusiveHolder!=null)continue;
+            if(prop==null||target.ContainsProp(prop)||prop.exclusiveHolder!=null)continue;
             bool matches=name=="SignProp center"?prop.name.StartsWith("SignProp",StringComparison.Ordinal)&&prop.GetComponentInChildren<PeckEffectTextInput>(true)!=null:prop.name==name;
             if(matches){target.Add(prop);RememberOrigin(prop);}
         }
@@ -598,7 +607,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void ClaimAllProps(string prefix,List<Prop> target)
     {
         target.RemoveAll(p=>p==null);if(Prop.allProps==null)return;
-        foreach(var prop in Prop.allProps)if(prop!=null&&!target.Contains(prop)&&prop.exclusiveHolder==null&&prop.name.StartsWith(prefix,StringComparison.Ordinal)){target.Add(prop);RememberOrigin(prop);}
+        foreach(var prop in Prop.allProps)if(prop!=null&&!target.ContainsProp(prop)&&prop.exclusiveHolder==null&&prop.name.StartsWith(prefix,StringComparison.Ordinal)){target.Add(prop);RememberOrigin(prop);}
     }
     void ClaimInstructionSigns()
     {
@@ -608,7 +617,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             Prop found=null;
             foreach(var prop in Prop.allProps)
             {
-                if(prop==null||prop==seekerBoardProp||prop==endBoardProp||instructionSignProps.Contains(prop)||prop.exclusiveHolder!=null)continue;
+                if(prop==null||prop==seekerBoardProp||prop==endBoardProp||instructionSignProps.ContainsProp(prop)||prop.exclusiveHolder!=null)continue;
                 if(prop.name.StartsWith("SignProp",StringComparison.Ordinal)&&prop.GetComponentInChildren<PeckEffectTextInput>(true)!=null){found=prop;break;}
             }
             if(found==null)break;
@@ -630,7 +639,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void ClaimBuoys(int wanted)
     {
         buoys.RemoveAll(prop=>prop==null);if(Prop.allProps==null||buoys.Count>=wanted)return;int before=buoys.Count;
-        foreach(var prop in Prop.allProps)if(prop!=null&&!buoys.Contains(prop)&&IsBuoyMarker(prop)){buoys.Add(prop);RememberOrigin(prop);}
+        foreach(var prop in Prop.allProps)if(prop!=null&&!buoys.ContainsProp(prop)&&IsBuoyMarker(prop)){buoys.Add(prop);RememberOrigin(prop);}
         if(!poolBuilt){Vector3 storage=MarkerStorage();buoys.Sort((a,b)=>(a.transform.position-storage).sqrMagnitude.CompareTo((b.transform.position-storage).sqrMagnitude));}
         if(buoys.Count!=before)Plugin.Logger.LogInfo($"[POOL] Indexed {buoys.Count} buoy markers; stored markers prioritized.");
     }
@@ -649,7 +658,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(!ValidateSpawnSlots(hiderSpawnSlots,"Play")||!ValidateSpawnSlots(seekerSpawnSlots,"Seeker")||!ValidateSpawnSlots(endSpawnSlots,"End"))return;
         spawnReservations.Clear();
         corpsePlacementCandidates=null;
-        ClearWorkers();deployingSeekers.Clear();seekerDeployment=false;propRefreshes.Clear();pickupCorrectionUntil.Clear();seekers.Clear();hiders.Clear();caught.Clear();known.Clear();disconnected.Clear();disconnectDeadlines.Clear();trackedCorpses.Clear();corpseTargets.Clear();roundPlayers.Clear();setupConfirmed.Clear();setupItemsGiven.Clear();normalItemAssignments.Clear();lockedSpeakerAssignments.Clear();seekerBeltAssignments.Clear();seekerBellAssignments.Clear();finalThirtyTriggered=false;borderCooldown.Clear();roundSpawnPositions.Clear();priorityTransports.Clear();transports.Clear();activeTransports.Clear();cleanupPending=false;cleanupItemReleaseAt=-1f;var people=Participants();
+        itemRolls.Clear();nextAuditLog.Clear();finalThirtyPending=false;ClearWorkers();deployingSeekers.Clear();seekerDeployment=false;seekers.Clear();hiders.Clear();caught.Clear();known.Clear();disconnected.Clear();disconnectDeadlines.Clear();trackedCorpses.Clear();corpseTargets.Clear();roundPlayers.Clear();setupConfirmed.Clear();setupItemsGiven.Clear();normalItemAssignments.Clear();lockedSpeakerAssignments.Clear();seekerBeltAssignments.Clear();seekerBellAssignments.Clear();finalThirtyTriggered=false;borderCooldown.Clear();roundSpawnPositions.Clear();priorityTransports.Clear();transports.Clear();activeTransports.Clear();cleanupPending=false;var people=Participants();
         if(people.Count==0){status="No remote players. Host is manager only.";return;}Shuffle(people);
         int count=people.Count==1?0:Mathf.Clamp(Plugin.SeekerCount.Value,1,Mathf.Min(3,people.Count-1));
 
@@ -696,7 +705,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void BeginFinalThirty()
     {
-        finalThirtyTriggered=true;StoreNormalItems();if(!Plugin.FinalThirtySpeakers.Value){status="Final 30 seconds: normal items stored; speakers disabled.";Plugin.Logger.LogInfo("[ROUND] "+status);return;}var remainingHiders=new List<PlayerCharacter>();foreach(var player in Participants())if(hiders.Contains(Key(player))&&!caught.Contains(Key(player)))remainingHiders.Add(player);Shuffle(remainingHiders);
+        if(!Plugin.FinalThirtySpeakers.Value){AuditLog("final-disabled","[FINAL THIRTY] speakers disabled; preserving normal assignments and items");return;}
+        finalThirtyTriggered=true;finalThirtyPending=true;foreach(var item in NormalItems())QueueItemStorage(item);normalItemAssignments.Clear();Plugin.Logger.LogInfo("[FINAL THIRTY] manager release queued; speakers wait for storage completion");
+    }
+    void GiveFinalSpeakers()
+    {
+        var remainingHiders=new List<PlayerCharacter>();foreach(var player in Participants())if(hiders.Contains(Key(player))&&!caught.Contains(Key(player)))remainingHiders.Add(player);Shuffle(remainingHiders);
         var available=new List<Prop>();foreach(var speaker in speakers)if(speaker!=null)available.Add(speaker);ShuffleProps(available);
         for(int i=0;i<remainingHiders.Count&&i<available.Count;i++){lockedSpeakerAssignments[Key(remainingHiders[i])]=available[i];GiveHeldItem(remainingHiders[i],available[i]);}
         status=$"Final 30 seconds: normal items stored; {lockedSpeakerAssignments.Count} remaining hider(s) locked to speakers.";Plugin.Logger.LogInfo("[ROUND] "+status);
@@ -709,39 +723,34 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void ReleaseLockedSpeaker(string key)
     {
-        if(!lockedSpeakerAssignments.TryGetValue(key,out var speaker))return;lockedSpeakerAssignments.Remove(key);if(speaker!=null)PlaceLoose(speaker,MarkerStorage()+new Vector3(lockedSpeakerAssignments.Count*.5f,2f,0f),Quaternion.identity);
+        if(!lockedSpeakerAssignments.TryGetValue(key,out var speaker))return;QueueItemStorage(speaker);lockedSpeakerAssignments.Remove(key);
     }
-    void StoreNormalItems(){int index=0;foreach(var item in NormalItems())if(item!=null)PlaceLoose(item,MarkerStorage()+new Vector3(index++*.5f,0f,1f),Quaternion.identity);normalItemAssignments.Clear();}
     void MaintainRequiredItems()
     {
         foreach(var player in Players())EnforceExclusiveHands(player);MaintainSeekerGear();MaintainHiderItems();MaintainLockedSpeakers();
     }
     void MaintainSeekerGear()
     {
-        foreach(var pair in seekerBeltAssignments){var player=FindPlayer(pair.Key);if(player==null||pair.Value==null||propRefreshes.ContainsKey(pair.Value))continue;if(player.registry?.holsterPocket?.pinnedProp!=pair.Value)EquipBelt(player,pair.Value);}
-        foreach(var pair in seekerBellAssignments){var player=FindPlayer(pair.Key);if(player==null||pair.Value==null||propRefreshes.ContainsKey(pair.Value))continue;var belt=player.registry?.holsterPocket?.pinnedProp;if(belt==null||belt.childPropHomes==null||belt.childPropHomes.Count==0||belt.childPropHomes[0].pinnedProp!=pair.Value)Stow(player,pair.Value);}
-    }
-    void ProcessPickupCorrections()
-    {
-        if(pickupCorrectionUntil.Count==0)return;
-        foreach(var pair in new Dictionary<PlayerNetworking,float>(pickupCorrectionUntil))
-            if(pair.Key==null||Time.unscaledTime>=pair.Value)pickupCorrectionUntil.Remove(pair.Key);
+        foreach(var pair in seekerBeltAssignments){var player=FindPlayer(pair.Key);if(player==null||pair.Value==null)continue;if(player.registry?.holsterPocket?.pinnedProp!=pair.Value)EquipBelt(player,pair.Value);}
+        foreach(var pair in seekerBellAssignments){var player=FindPlayer(pair.Key);if(player==null||pair.Value==null)continue;var belt=player.registry?.holsterPocket?.pinnedProp;if(belt==null||belt.childPropHomes==null||belt.childPropHomes.Count==0||belt.childPropHomes[0].pinnedProp!=pair.Value)Stow(player,pair.Value);}
     }
     void MaintainHiderItems()
     {
-        if(Plugin.RandomItemChance.Value<=0f||finalThirtyTriggered)return;
+        if(lastItemChance!=Plugin.RandomItemChance.Value){lastItemChance=Plugin.RandomItemChance.Value;Plugin.Logger.LogInfo($"[ITEM CHANCE] now={lastItemChance}% existingAssignments={normalItemAssignments.Count}; existing ownership preserved");}
+        if(finalThirtyTriggered)return;
         foreach(var pair in new List<KeyValuePair<string,Prop>>(normalItemAssignments))
         {
             if(!normalItemAssignments.TryGetValue(pair.Key,out var current)||current!=pair.Value)continue;
-            var owner=FindPlayer(pair.Key);if(owner==null||pickupCorrectionUntil.ContainsKey(owner.playerNetworking)||propRefreshes.ContainsKey(pair.Value))continue;if(caught.Contains(pair.Key)){normalItemAssignments.Remove(pair.Key);PlaceLoose(pair.Value,MarkerStorage(),Quaternion.identity);continue;}
+            var owner=FindPlayer(pair.Key);if(owner==null)continue;if(caught.Contains(pair.Key)){QueueItemStorage(pair.Value);normalItemAssignments.Remove(pair.Key);continue;}
             if(owner.hands?.heldProp==pair.Value)continue;
             var holder=FindHolder(pair.Value);
             if(holder!=null&&hiders.Contains(Key(holder))&&!caught.Contains(Key(holder)))
             {
                 string holderKey=Key(holder);if(normalItemAssignments.ContainsKey(holderKey)||lockedSpeakerAssignments.ContainsKey(holderKey)){GiveHeldItem(owner,pair.Value);continue;}
-                normalItemAssignments.Remove(pair.Key);normalItemAssignments[holderKey]=pair.Value;continue;
+                if(phase==Phase.SettingUp){GiveHeldItem(owner,pair.Value);continue;}
+                normalItemAssignments.Remove(pair.Key);normalItemAssignments[holderKey]=pair.Value;Plugin.Logger.LogInfo($"[ITEM TRANSFER RECONCILE] {pair.Key} -> {holderKey} item={pair.Value.name}");continue;
             }
-            GiveHeldItem(owner,pair.Value);
+            AuditLog("item-return:"+pair.Key,$"[ITEM ENFORCE] player={pair.Key} required={pair.Value?.name} observed={owner.hands?.heldProp?.name} holder={Key(holder)} phase={phase}");GiveHeldItem(owner,pair.Value);
         }
     }
     static PlayerCharacter FindPlayer(string key){foreach(var player in Players())if(Key(player)==key)return player;return null;}
@@ -759,14 +768,14 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(message.IndexOf("SEEKERS WIN",StringComparison.Ordinal)>=0)
         {
             int secondsLeft=phase==Phase.Seeking?Mathf.Max(0,Mathf.CeilToInt(remaining)):Mathf.Max(0,Mathf.CeilToInt(Plugin.RoundTime.Value));
-            boardMessage=$"SEEKERS WIN\nWITH ONLY {secondsLeft} SECONDS LEFT";
+            boardMessage=$"SEEKERS WIN WITH ONLY {secondsLeft} SECONDS LEFT";
         }
         else if(message.IndexOf("HIDERS WIN",StringComparison.Ordinal)>=0)boardMessage="HIDERS WIN";
         recoveryAttempts.Clear();
         ReturnBoundaryBuoys(0,playBorder.Count+seekerBorder.Count+endBorder.Count);
         phase=Phase.Ended;seekerDeployment=false;deployingSeekers.Clear();remaining=0;SetBoard(seekerBoard,boardMessage);SetBoard(endBoard,boardMessage);SetBoard(statusBoard,boardMessage);
         foreach(var player in Participants()){var key=Key(player);if(caught.Contains(key))continue;var target=ReserveSpawn(key,endSpawnSlots);roundSpawnPositions[key]=target;QueueTransport(player,target,"round ended");}
-        ReturnAllWarningBuoys();ParkIdleWorkers();cleanupItemReleaseAt=-1f;cleanupPending=true;status=message;
+        ReturnAllWarningBuoys();ParkIdleWorkers();cleanupPending=true;BeginRoundItemCleanup();status=message;
     }
     void HandleConnections()
     {
@@ -846,7 +855,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         foreach(var player in people){string key=Key(player);if(!seekers.Contains(key))TryAssignRandomHiderItem(key);}
         int storedItems=0;foreach(var item in items)PlaceLoose(item,MarkerStorage()+new Vector3(storedItems++*.5f,0f,0f),Quaternion.identity);
         for(int i=0;i<walkies.Count;i++)PlaceLoose(walkies[i],MarkerStorage()+new Vector3(i*.5f,1.5f,0f),Quaternion.identity);
-        var selectedSpeakers=new HashSet<Prop>();foreach(var item in roundItemPool)if(speakers.Contains(item))selectedSpeakers.Add(item);int stored=0;foreach(var speaker in speakers)if(!selectedSpeakers.Contains(speaker))PlaceLoose(speaker,MarkerStorage()+new Vector3(stored++*.5f,1f,0f),Quaternion.identity);
+        var selectedSpeakers=new HashSet<Prop>(NativeIdentity<Prop>.Instance);foreach(var item in roundItemPool)if(speakers.ContainsProp(item))selectedSpeakers.Add(item);int stored=0;foreach(var speaker in speakers)if(!selectedSpeakers.Contains(speaker))PlaceLoose(speaker,MarkerStorage()+new Vector3(stored++*.5f,1f,0f),Quaternion.identity);
     }
     void BuildRoundItemPool()
     {
@@ -859,9 +868,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void TryAssignRandomHiderItem(string key)
     {
-        if(UnityEngine.Random.value>=Mathf.Clamp01(Plugin.RandomItemChance.Value/100f))return;var categories=AvailableItemCategories();if(categories.Count==0)return;
+        if(!itemRolls.Add(key))return;
+        Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} chance={Plugin.RandomItemChance.Value}% phase={phase}");
+        if(UnityEngine.Random.value>=Mathf.Clamp01(Plugin.RandomItemChance.Value/100f)){Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} result=no item");return;}var categories=AvailableItemCategories();if(categories.Count==0){Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} result=pool exhausted");return;}
         string category=categories[UnityEngine.Random.Range(0,categories.Count)];var choices=CategoryItems(category);if(choices.Count==0)return;
         normalItemAssignments[key]=choices[UnityEngine.Random.Range(0,choices.Count)];
+        Plugin.Logger.LogInfo($"[ITEM ROLL] player={key} category={category} item={normalItemAssignments[key].name}");
     }
     List<string> AvailableItemCategories()
     {
@@ -869,15 +881,16 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     List<Prop> CategoryItems(string category)
     {
-        var result=new List<Prop>();foreach(var item in roundItemPool)if(!normalItemAssignments.ContainsValue(item)&&((category=="megaphone"&&megaphones.Contains(item))||(category=="flare"&&flares.Contains(item))||(category=="goggles"&&xrayGoggles.Contains(item))||(category=="speaker"&&speakers.Contains(item))))result.Add(item);return result;
+        var result=new List<Prop>();foreach(var item in roundItemPool)if(!normalItemAssignments.Values.ContainsProp(item)&&((category=="megaphone"&&megaphones.ContainsProp(item))||(category=="flare"&&flares.ContainsProp(item))||(category=="goggles"&&xrayGoggles.ContainsProp(item))||(category=="speaker"&&speakers.ContainsProp(item))))result.Add(item);return result;
     }
     static void AddUnique(List<Prop> result,HashSet<Prop> seen,List<Prop> source){foreach(var prop in source)if(prop!=null&&seen.Add(prop))result.Add(prop);}
     void EquipAfterConfirmedTeleport(PlayerCharacter player)
     {
         if(player==null||!setupItemsGiven.Add(Key(player)))return;
         string key=Key(player);
-        if(seekers.Contains(key)){int index=0;foreach(var candidate in Participants()){if(!seekers.Contains(Key(candidate)))continue;if(candidate==player)break;index++;}if(index<belts.Count){seekerBeltAssignments[key]=belts[index];EquipBelt(player,belts[index]);}if(index<bells.Count){seekerBellAssignments[key]=bells[index];Stow(player,bells[index]);}return;}
-        if(Plugin.RandomItemChance.Value>0f&&hiders.Contains(key)&&!caught.Contains(key))
+        if(seekers.Contains(key)){AssignSeekerGear(player,key);return;}
+        if(finalThirtyTriggered){if(lockedSpeakerAssignments.TryGetValue(key,out var speaker)&&!caught.Contains(key))GiveHeldItem(player,speaker);Plugin.Logger.LogInfo($"[ITEM REJOIN] final-period player={key}; normal allocation skipped");return;}
+        if(hiders.Contains(key)&&!caught.Contains(key))
         {
             if(!normalItemAssignments.TryGetValue(key,out var item)){TryAssignRandomHiderItem(key);normalItemAssignments.TryGetValue(key,out item);}
             if(item!=null)GiveHeldItem(player,item);
@@ -885,7 +898,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     static void GiveHeldItem(PlayerCharacter player,Prop item)
     {
-        if(player?.playerNetworking==null||item==null||Instance.propRefreshes.ContainsKey(item))return;
+        if(player?.playerNetworking==null||item==null)return;
         var networking=player.playerNetworking;
         if(player.hands?.heldCharacter!=null)networking.UserCode_CmdDropHeldPlayer();
         if(player.hands?.heldProp!=null)StopUsingHeldProp(player,player.hands.heldProp);
@@ -1018,7 +1031,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         }
         group.RemoveAll(p=>p==null);
         ClaimBuoys(StaticBorderCount()+Mathf.Max(1,Participants().Count));
-        var used=new HashSet<Prop>();foreach(var existing in warningBuoys.Values)foreach(var prop in existing)if(prop!=null)used.Add(prop);
+        var used=new HashSet<Prop>(NativeIdentity<Prop>.Instance);foreach(var existing in warningBuoys.Values)foreach(var prop in existing)if(prop!=null)used.Add(prop);
         const int desired=1;
         while(group.Count>desired){var extra=group[group.Count-1];group.RemoveAt(group.Count-1);markerPositions.Remove(extra);markerRotations.Remove(extra);PlaceLoose(extra,MarkerStorage(),Quaternion.identity);}
         for(int i=StaticBorderCount();i<buoys.Count&&group.Count<desired;i++)if(buoys[i]!=null&&!used.Contains(buoys[i])){group.Add(buoys[i]);used.Add(buoys[i]);SetState(buoys[i],1);}
@@ -1122,9 +1135,9 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             if(prop==seekerBoardProp){if(hasSeekerSign)MaintainFloatingMarker(prop,pair.Value,rotation);else if(BoardOutsideArea(prop,seekerBorder,pair.Value))PlaceStatic(prop,pair.Value,rotation);continue;}
             if(prop==endBoardProp){if(hasEndSign)MaintainFloatingMarker(prop,pair.Value,rotation);else if(BoardOutsideArea(prop,endBorder,pair.Value))PlaceStatic(prop,pair.Value,rotation);continue;}
             if(prop==statusBoardProp){MaintainFloatingMarker(prop,pair.Value,rotation);continue;}
-            if(instructionSignProps.Contains(prop)){MaintainFloatingMarker(prop,pair.Value,rotation);continue;}
+            if(instructionSignProps.ContainsProp(prop)){MaintainFloatingMarker(prop,pair.Value,rotation);continue;}
             if(IsWarningBuoy(prop)){PlaceStatic(prop,pair.Value,rotation);continue;}
-            if(buoys.Contains(prop)){MaintainBorderBuoy(prop,pair.Value,rotation);continue;}
+            if(buoys.ContainsProp(prop)){MaintainBorderBuoy(prop,pair.Value,rotation);continue;}
             if(prop.exclusiveHolder!=null||prop.currentHome!=null||Vector3.Distance(prop.transform.position,pair.Value)>.75f||Quaternion.Angle(prop.transform.rotation,rotation)>20f)PlaceStatic(prop,pair.Value,rotation);
         }
         MaintainBrushes();
@@ -1149,7 +1162,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(checks<5)return;
         borderDriftChecks[prop]=0;PlaceStatic(prop,home,rotation);
     }
-    bool IsWarningBuoy(Prop prop){foreach(var group in warningBuoys.Values)if(group.Contains(prop))return true;return false;}
+    bool IsWarningBuoy(Prop prop){foreach(var group in warningBuoys.Values)if(group.ContainsProp(prop))return true;return false;}
     static bool BoardOutsideArea(Prop board,List<Vector3> zone,Vector3 home)=>zone.Count>=4&&(!InsideBorder(board.transform.position,zone)||board.transform.position.y<home.y-5f);
     Vector3 MarkerStorage()=>hasGearStorage?gearStorage:(hasCenter?center+Vector3.down*500f:new Vector3(0f,-500f,0f));
     void EnforceEndArea()
@@ -1167,7 +1180,23 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void UpdateBoards(){int sec=Mathf.Max(0,Mathf.CeilToInt(remaining)),left=ActiveHiderCount();if(phase==Phase.Hiding){SetBoard(seekerBoard,"SEEK IN "+sec);SetBoard(endBoard,"ROUND STARTING");SetBoard(statusBoard,$"HIDE: {sec}\nHIDERS: {left}");}else if(phase==Phase.Seeking){SetBoard(seekerBoard,"SEEK NOW");SetBoard(endBoard,"ROUND ENDS IN "+sec);SetBoard(statusBoard,$"TIME LEFT: {sec}\nHIDERS LEFT: {left}");}}
     int ActiveHiderCount(){int count=0;foreach(var key in hiders)if(!caught.Contains(key)&&FindPlayer(key)!=null)count++;return count;}
-    static void SetBoard(PeckEffectTextInput b,string text){if(b!=null&&NetworkServer.active)b.NetworknetworkedText=text;}
+    static void SetBoard(PeckEffectTextInput b,string text)
+    {
+        if(b==null||!NetworkServer.active)return;
+        if(ActiveHost&&b.netId!=0)Instance.expectedSignText[b.netId]=text;
+        b.NetworknetworkedText=text;
+    }
+    internal static bool RejectSignEdit(PeckEffectTextInput sign,NetworkReader reader)
+    {
+        if(!ActiveHost||sign==null||!Instance.expectedSignText.TryGetValue(sign.netId,out var expected))return false;
+        var attempted=NetworkReaderExtensions.ReadString(reader);
+        var author=NetworkReaderExtensions.ReadString(reader);
+        if(attempted!=expected)Plugin.Logger.LogInfo($"[SIGN TEXT BLOCK] netId={sign.netId} restored managed text");
+        // Replay through the game's own text command so the editing client gets a
+        // networked correction even when the host already holds the expected text.
+        sign.UserCode_CmdSendNewText__String__String(expected,author);
+        return true;
+    }
     static void SetState(Prop p,int state){if(p==null)return;foreach(var t in p.GetComponentsInChildren<TrackedPeckState>(true))if(t!=null)t.SetState(state);}
     static void PlaceStatic(Prop p,Vector3 pos,Quaternion rot)
     {
@@ -1183,23 +1212,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void RestoreBorrowedProps()
     {
-        foreach(var pair in new Dictionary<PlayerCharacter,Prop>(cleanupManagerItems))
-        {
-            var manager=pair.Key;var prop=pair.Value;
-            if(manager?.playerNetworking!=null){DirectLocalTeleport(manager,MarkerStorage());manager.playerNetworking.ServerDropPropAutomatic(true);BroadcastSnapshot(manager.playerNetworking);}
-            if(prop!=null)BroadcastSnapshot(prop);
-        }
-        cleanupManagerItems.Clear();
         normalItemAssignments.Clear();lockedSpeakerAssignments.Clear();
-        foreach(var player in Players())
-        {
-            if(player.hands?.heldCharacter!=null)player.actions.ActionDropPlayer();
-            if(player.hands?.heldProp!=null&&propOrigins.ContainsKey(player.hands.heldProp)){StopUsingHeldProp(player,player.hands.heldProp);player.playerNetworking.ServerDropPropAutomatic();}
-        }
+        Plugin.Logger.LogInfo($"[CLEANUP] storage complete; leaving {activeTransports.Count} active player transport(s) intact");
         foreach(var pair in propOrigins)
         {
             var prop=pair.Key;if(prop==null)continue;
-            if(buoys.Contains(prop)||IsGear(prop)||IsSign(prop))continue;
+            if(buoys.ContainsProp(prop)||IsGear(prop)||IsSign(prop))continue;
             if(prop.currentHome!=null)prop.ServerSetUnpinned();
             prop.transform.SetPositionAndRotation(pair.Value.Position,pair.Value.Rotation);
             if(prop.rb!=null){prop.rb.position=pair.Value.Position;prop.rb.rotation=pair.Value.Rotation;if(!pair.Value.Kinematic){prop.rb.isKinematic=false;prop.rb.linearVelocity=Vector3.zero;prop.rb.angularVelocity=Vector3.zero;}prop.rb.useGravity=pair.Value.Gravity;prop.rb.isKinematic=pair.Value.Kinematic;}
@@ -1209,43 +1227,8 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         StoreGear();
         Plugin.Logger.LogInfo("[CLEANUP] Gear moved to storage. Signs and border markers retained.");
     }
-    void RepeatCleanupSnatch()
-    {
-        cleanupSnatchAttempts++;
-        foreach(var pair in cleanupManagerItems)
-        {
-            var manager=pair.Key;var prop=pair.Value;
-            if(manager?.playerNetworking==null||prop==null)continue;
-            try{manager.playerNetworking.ServerPickUpPropAutomatic(prop);}
-            catch(Exception ex){Plugin.Logger.LogWarning("[ITEM RELEASE] snatch "+cleanupSnatchAttempts+"/10 failed: "+ex.GetBaseException().Message);}
-        }
-        if(cleanupSnatchAttempts==10)Plugin.Logger.LogInfo("[ITEM RELEASE] completed 10 snatch attempts; releasing to storage next tick.");
-    }
-    void PrepareBorrowedPropRelease()
-    {
-        cleanupManagerItems.Clear();int snatched=0,fallback=0;
-        var usedManagers=new HashSet<PlayerCharacter>();
-        var usedProps=new HashSet<Prop>();
-        var targets=new Dictionary<PlayerCharacter,Prop>();
-        foreach(var pair in normalItemAssignments){var player=FindPlayer(pair.Key);if(player!=null&&pair.Value!=null)targets[player]=pair.Value;}
-        foreach(var pair in lockedSpeakerAssignments){var player=FindPlayer(pair.Key);if(player!=null&&pair.Value!=null)targets[player]=pair.Value;}
-        foreach(var player in Players())if(!IsDummyManager(player)&&player.hands?.heldProp!=null&&propOrigins.ContainsKey(player.hands.heldProp))targets[player]=player.hands.heldProp;
-        foreach(var target in targets)
-        {
-            var player=target.Key;var prop=target.Value;
-            if(!usedProps.Add(prop))continue;
-            PlayerCharacter manager=null;
-            foreach(var candidate in standbyManagers)
-                if(candidate!=null&&!usedManagers.Contains(candidate)&&candidate.hands?.heldCharacter==null&&candidate.hands?.heldProp==null){manager=candidate;break;}
-            if(manager==null){StopUsingHeldProp(player,prop);fallback++;continue;}
-            usedManagers.Add(manager);
-            cleanupManagerItems[manager]=prop;
-            snatched++;
-        }
-        Plugin.Logger.LogInfo("[ITEM RELEASE] managers reserved for "+snatched+" held item(s); direct fallback="+fallback+". Performing 10 snatches at 0.05s intervals before storage.");
-    }
-    bool IsGear(Prop prop)=>megaphones.Contains(prop)||walkies.Contains(prop)||flares.Contains(prop)||xrayGoggles.Contains(prop)||speakers.Contains(prop)||belts.Contains(prop)||bells.Contains(prop)||brushes.Contains(prop);
-    bool IsSign(Prop prop)=>prop==seekerBoardProp||prop==endBoardProp||prop==statusBoardProp||instructionSignProps.Contains(prop);
+    bool IsGear(Prop prop)=>megaphones.ContainsProp(prop)||walkies.ContainsProp(prop)||flares.ContainsProp(prop)||xrayGoggles.ContainsProp(prop)||speakers.ContainsProp(prop)||belts.ContainsProp(prop)||bells.ContainsProp(prop)||brushes.ContainsProp(prop);
+    bool IsSign(Prop prop)=>prop==seekerBoardProp||prop==endBoardProp||prop==statusBoardProp||instructionSignProps.ContainsProp(prop);
     void StoreGear()
     {
         var storage=hasGearStorage?gearStorage:(hasCenter?center+Vector3.down*500f:new Vector3(0f,-500f,0f));
@@ -1330,7 +1313,14 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             existing.Target=target;existing.Reason=reason;existing.BorderReturn=borderReturn;
             if(!borderReturn){int count=transports.Count;for(int i=0;i<count;i++){var queued=transports.Dequeue();if(queued!=existing)transports.Enqueue(queued);}priorityTransports.Enqueue(existing);}return;
         }
-        foreach(var active in activeTransports)if(active.Player==player){active.Target=target;active.Reason=reason;active.BorderReturn=borderReturn;active.Confirmations=0;active.StableSince=0f;return;}
+        foreach(var active in activeTransports)if(active.Player==player)
+        {
+            if(active.Target==target&&active.BorderReturn==borderReturn)return;
+            Plugin.Logger.LogInfo($"[TRANSPORT RETARGET] player={Key(player)} stage={active.Stage} old={active.Target} new={target} reason={reason}");
+            if(active.Worker?.hands?.heldCharacter!=null)ManagerDrop(active.Worker);
+            active.Target=target;active.Reason=reason;active.BorderReturn=borderReturn;active.Stage=-1;active.Attempts=0;active.AirFallbackUsed=false;active.Confirmations=0;active.StableSince=0f;active.NextStage=Time.unscaledTime+.1f;
+            active.Deadline=Time.unscaledTime+2f;return;
+        }
         var request=new TransportRequest{Player=player,Target=target,Reason=reason,BorderReturn=borderReturn};if(borderReturn)transports.Enqueue(request);else priorityTransports.Enqueue(request);
         Plugin.Logger.LogInfo($"[TRANSPORT] queued {Key(player)} -> {target} ({reason})");
     }
@@ -1375,7 +1365,11 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
                 if(fields.Length<3||fields[1]!=ModProtocol){Plugin.Logger.LogWarning($"[MOD LINK] {key} uses incompatible protocol; dummy transport retained");return;}
                 bool firstHello=!moddedClients.TryGetValue(key,out var previousConnection)||previousConnection!=connection;moddedClients[key]=connection;SendHostSettings(connection);if(firstHello){CancelDummyTransport(player);Plugin.Logger.LogInfo($"[MOD LINK] {key} connected with HNS mod {fields[2]} protocol {fields[1]}");}return;
             }
-            if(fields[0]=="A"&&fields.Length>=3&&fields[1]==ModProtocol&&int.TryParse(fields[2],NumberStyles.Integer,CultureInfo.InvariantCulture,out var token)&&clientTransports.TryGetValue(key,out var request)&&request.Token==token&&Vector3.Distance(player.transform.position,request.Target)<=1f)FinishClientTransport(key,request,true);
+            if(fields[0]=="A"&&fields.Length>=3&&fields[1]==ModProtocol&&int.TryParse(fields[2],NumberStyles.Integer,CultureInfo.InvariantCulture,out var token)&&clientTransports.TryGetValue(key,out var request)&&request.Token==token&&request.Player==player&&moddedClients.TryGetValue(key,out var registered)&&registered==connection)
+            {
+                request.Acknowledged=true;
+                if(Vector3.Distance(player.transform.position,request.Target)<=1f)FinishClientTransport(key,request,true);
+            }
         }
         catch(Exception ex){Plugin.Logger.LogWarning("[MOD LINK] server packet failed: "+ex.Message);}
     }
@@ -1386,17 +1380,19 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             if(!Plugin.Enabled.Value||NetworkServer.active)return;
             string payload=reader.ReadString();if(string.IsNullOrEmpty(payload))return;var fields=payload.Split('|');
             if(fields[0]=="D"&&fields.Length>=2&&fields[1]==ModProtocol){ClearRemoteModSession();return;}
-            if(fields[0]=="S"&&fields.Length>=3&&fields[1]==ModProtocol&&modHelloSent){ApplyRemoteHostSettings(Encoding.UTF8.GetString(Convert.FromBase64String(fields[2])));remoteSessionEnabled=true;return;}
+            if(fields[0]=="S"&&fields.Length>=3&&fields[1]==ModProtocol&&modHelloSent){ApplyRemoteHostSettings(Encoding.UTF8.GetString(Convert.FromBase64String(fields[2])));if(!remoteSessionEnabled)Plugin.Logger.LogInfo("[MOD LINK] host settings received; automatic client session enabled");remoteSessionEnabled=true;return;}
             if(fields[0]=="C"&&fields.Length>=3&&fields[1]==ModProtocol&&int.TryParse(fields[2],out var cancelledToken))
             {
                 completedRemoteToken=Math.Max(completedRemoteToken,cancelledToken);
+                cancelledRemoteToken=Math.Max(cancelledRemoteToken,cancelledToken);
                 if(remoteClientTransport!=null&&remoteClientTransport.Token<=cancelledToken)remoteClientTransport=null;
                 return;
             }
             if(!remoteSessionEnabled||fields[0]!="T"||fields.Length<7||fields[1]!=ModProtocol)return;var local=LocalPlayer();if(local==null)return;
             if(!int.TryParse(fields[2],NumberStyles.Integer,CultureInfo.InvariantCulture,out var token)||!float.TryParse(fields[3],NumberStyles.Float,CultureInfo.InvariantCulture,out var x)||!float.TryParse(fields[4],NumberStyles.Float,CultureInfo.InvariantCulture,out var y)||!float.TryParse(fields[5],NumberStyles.Float,CultureInfo.InvariantCulture,out var z))return;
             if(!float.IsFinite(x)||!float.IsFinite(y)||!float.IsFinite(z)||token<=0)return;
-            if(token<=completedRemoteToken){if(token==completedRemoteToken)SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+token.ToString(CultureInfo.InvariantCulture));return;}
+            if(token<=cancelledRemoteToken||token<completedRemoteToken)return;
+            if(token==completedRemoteToken&&Vector3.Distance(local.transform.position,new Vector3(x,y,z))<=1f){SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+token.ToString(CultureInfo.InvariantCulture));return;}
             if(remoteClientTransport!=null&&token<=remoteClientTransport.Token)return;
             bool border=fields[6]=="1";var target=new Vector3(x,y,z);remoteClientTransport=new RemoteClientTransport{Target=target,Token=token,BorderReturn=border,Deadline=Time.unscaledTime+5f};DirectLocalTeleport(local,target);StabilizePlayer(local,border?.35f:.5f);
         }
@@ -1414,6 +1410,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
             "area="+Plugin.AreaPoint.Value,"seeker="+Plugin.SeekerPoint.Value,"end="+Plugin.EndPoint.Value,"dummyStandbys="+Plugin.DummyStandbySlots.Value,"playSpawns="+Plugin.HiderSpawnSlots.Value,"seekerSpawns="+Plugin.SeekerSpawnSlots.Value,"endSpawns="+Plugin.EndSpawnSlots.Value,"draftSpawns="+Plugin.DraftSpawnSlots.Value,
             "gear="+Plugin.GearStoragePoint.Value,"draftBorder="+Plugin.BorderPoints.Value,"playBorder="+Plugin.PlayBorder.Value,"seekerBorder="+Plugin.SeekerBorder.Value,"endBorder="+Plugin.EndBorder.Value,"draftRecoveries="+Plugin.DraftRecoveryPoints.Value,"playRecoveries="+Plugin.PlayRecoveryPoints.Value,
             "instructionSigns="+Plugin.InstructionSigns.Value,"instructionText="+Convert.ToBase64String(Encoding.UTF8.GetBytes(Plugin.InstructionSignText.Value??"")),"seekerSign="+Plugin.SeekerSignTransform.Value,"endSign="+Plugin.EndSignTransform.Value,"statusSign="+Plugin.StatusSignTransform.Value,"playAreas="+Convert.ToBase64String(Encoding.UTF8.GetBytes(Plugin.PlayAreas.Value??"")),
+            "finalThirtySpeakers="+Plugin.FinalThirtySpeakers.Value,
             "itemCategories="+$"{Plugin.EnableMegaphones.Value}:{Plugin.MegaphoneItemCount.Value},{Plugin.EnableFlares.Value}:{Plugin.FlareItemCount.Value},{Plugin.EnableGoggles.Value}:{Plugin.GogglesItemCount.Value},{Plugin.EnableSpeakers.Value}:{Plugin.SpeakerItemCount.Value}"
         });return "S|"+ModProtocol+"|"+Convert.ToBase64String(Encoding.UTF8.GetBytes(settings));
     }
@@ -1423,7 +1420,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     }
     void QueueClientTransport(PlayerCharacter player,Vector3 target,string reason,bool borderReturn)
     {
-        string key=Key(player);if(clientTransports.TryGetValue(key,out var existing)){if(existing.Player==player&&existing.Target==target&&existing.BorderReturn==borderReturn)return;existing.Target=target;existing.Reason=reason;existing.BorderReturn=borderReturn;existing.Token=++clientTransportSerial;existing.Attempts=0;existing.NextSend=0f;return;}
+        string key=Key(player);if(clientTransports.TryGetValue(key,out var existing)){if(existing.Player==player&&existing.Target==target&&existing.BorderReturn==borderReturn)return;existing.Player=player;existing.Target=target;existing.Reason=reason;existing.BorderReturn=borderReturn;existing.Token=++clientTransportSerial;existing.Attempts=0;existing.Acknowledged=false;existing.NextSend=0f;return;}
         clientTransports[key]=new ClientTransportRequest{Player=player,Target=target,Reason=reason,BorderReturn=borderReturn,Token=++clientTransportSerial};
     }
     void ProcessClientTransports()
@@ -1431,6 +1428,8 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         foreach(var pair in new Dictionary<string,ClientTransportRequest>(clientTransports))
         {
             var request=pair.Value;if(request?.Player==null||!moddedClients.TryGetValue(pair.Key,out var connection)){FinishClientTransport(pair.Key,request,false);continue;}
+            // Movement may arrive after its reliable ACK on a different channel.
+            if(request.Acknowledged&&Vector3.Distance(request.Player.transform.position,request.Target)<=1f){FinishClientTransport(pair.Key,request,true);continue;}
             if(Time.unscaledTime<request.NextSend)continue;if(request.Attempts++>=10){SendRaw(connection,"C|"+ModProtocol+"|"+request.Token.ToString(CultureInfo.InvariantCulture));failedModConnections.Add(connection);FinishClientTransport(pair.Key,request,false);moddedClients.Remove(pair.Key);QueueTransport(request.Player,request.Target,request.Reason,request.BorderReturn);continue;}
             request.NextSend=Time.unscaledTime+.5f;SendRaw(connection,string.Format(CultureInfo.InvariantCulture,"T|{0}|{1}|{2:R}|{3:R}|{4:R}|{5}",ModProtocol,request.Token,request.Target.x,request.Target.y,request.Target.z,request.BorderReturn?1:0));
         }
@@ -1440,7 +1439,7 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         var request=remoteClientTransport;if(request==null)return;var local=LocalPlayer();if(local==null||NetworkClient.connection==null||Time.unscaledTime>=request.Deadline){remoteClientTransport=null;return;}
         if(Vector3.Distance(local.transform.position,request.Target)<=1f)
         {
-            if(++request.Confirmations>=2){completedRemoteToken=request.Token;SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+request.Token.ToString(CultureInfo.InvariantCulture));remoteClientTransport=null;}return;
+            if(++request.Confirmations>=2){completedRemoteToken=request.Token;SendRaw(NetworkClient.connection,"A|"+ModProtocol+"|"+request.Token.ToString(CultureInfo.InvariantCulture));Plugin.Logger.LogInfo($"[MOD TRANSPORT CLIENT] confirmed token={request.Token} target={request.Target}");remoteClientTransport=null;}return;
         }
         request.Confirmations=0;if(Time.unscaledTime<request.NextAttempt)return;request.NextAttempt=Time.unscaledTime+.1f;DirectLocalTeleport(local,request.Target);StabilizePlayer(local,request.BorderReturn?.35f:.5f);
     }
@@ -1520,8 +1519,12 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
     void ProcessTransport(TransportRequest request)
     {
         if(request==null||Time.unscaledTime<request.NextStage)return;var worker=request.Worker;if(!CanTransportPlayer(request.Player)||!CanTransportPlayer(worker)){FinishTransport(request,false);return;}
+        if(request.LoggedStage!=request.Stage){request.LoggedStage=request.Stage;Plugin.Logger.LogInfo($"[TRANSPORT STAGE] player={Key(request.Player)} stage={request.Stage} worker={standbyManagers.IndexOf(worker)+1} playerPos={request.Player.transform.position} target={request.Target} held={worker.hands.heldCharacter==request.Player}");}
         switch(request.Stage)
         {
+            case -1:
+                if(worker.hands?.heldCharacter!=null){ManagerDrop(worker);if(Time.unscaledTime>=request.Deadline){FinishTransport(request,false);break;}request.NextStage=Time.unscaledTime+.05f;break;}
+                DirectLocalTeleport(worker,request.Target);request.Stage=0;request.NextStage=Time.unscaledTime+.05f;break;
             case 0:
                 if(worker.hands?.heldCharacter!=null)ManagerDrop(worker);ManagerPickUp(worker,request.Player);request.Stage=1;request.NextStage=Time.unscaledTime+.05f;request.Deadline=Time.unscaledTime+.5f;break;
             case 1:

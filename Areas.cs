@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Required Notice: Copyright (c) 2026 AdamMady.
 // Required Notice: Original repository: https://github.com/AdamMady/Mady-s-Hide-And-Seek
 // Commercial use requires prior written permission from AdamMady.
@@ -34,6 +34,7 @@ public sealed partial class HideAndSeekTester
     readonly List<GameObject> debugBorderBeams=new();
     Material debugBeamMaterial;
     float nextDebugBeamUpdate;
+    int debugBeamCursor;
     int activeAreaIndex=-1,editingAreaIndex=-1;
     Vector3 draftStatusSignPosition;float draftStatusSignYaw;bool hasDraftStatusSign;
 
@@ -89,7 +90,8 @@ public sealed partial class HideAndSeekTester
     }
     void DeleteSelectedPlayArea()
     {
-        int selected=Plugin.AreaSelection.Value;if(selected<=0||selected>playAreas.Count){status="Select a specific play area first.";return;}playAreas.RemoveAt(selected-1);SavePlayAreas();Plugin.AreaSelection.Value=Mathf.Clamp(selected-1,0,playAreas.Count);editingAreaIndex=-1;status=$"Deleted area {selected}.";
+        if(phase!=Phase.Idle&&phase!=Phase.Ended){status="Finish round before deleting areas.";return;}
+        int selected=Plugin.AreaSelection.Value;if(selected<=0||selected>playAreas.Count){status="Select a specific play area first.";return;}if(activeAreaIndex==selected-1)activeAreaIndex=-1;else if(activeAreaIndex>selected-1)activeAreaIndex--;playAreas.RemoveAt(selected-1);Plugin.Logger.LogInfo($"[AREA DELETE] deleted={selected} activeIndex={activeAreaIndex}");SavePlayAreas();Plugin.AreaSelection.Value=Mathf.Clamp(selected-1,0,playAreas.Count);editingAreaIndex=-1;status=$"Deleted area {selected}.";
     }
     bool draftEnforcementLights=true;
     void DrawAreaEditControls()
@@ -145,7 +147,7 @@ public sealed partial class HideAndSeekTester
     }
     void ClearAreaStatusSign()
     {
-        int selected=Plugin.AreaSelection.Value;if(spawnPoints.Count==0&&borderPoints.Count==0&&recoveryPoints.Count==0&&selected>0&&selected<=playAreas.Count){playAreas[selected-1].HasStatusSign=false;SavePlayAreas();status=$"Area {selected} play sign cleared.";return;}hasDraftStatusSign=false;status="Area play sign draft cleared.";
+        int selected=Plugin.AreaSelection.Value;if(spawnPoints.Count==0&&borderPoints.Count==0&&recoveryPoints.Count==0&&selected>0&&selected<=playAreas.Count){playAreas[selected-1].HasStatusSign=false;SavePlayAreas();if(activeAreaIndex==selected-1){hasStatusSign=false;Plugin.StatusSignTransform.Value="";if(statusBoardProp!=null){markerPositions.Remove(statusBoardProp);markerRotations.Remove(statusBoardProp);PlaceLoose(statusBoardProp,MarkerStorage(),Quaternion.identity);}}Plugin.Logger.LogInfo($"[SIGN CLEAR] area={selected} active={activeAreaIndex+1}");status=$"Area {selected} play sign cleared.";return;}hasDraftStatusSign=false;status="Area play sign draft cleared.";
     }
     void UndoPoint(List<Vector3> points,ConfigEntry<string> config,string label)
     {
@@ -168,13 +170,13 @@ public sealed partial class HideAndSeekTester
     }
     void UpdateDebugBeams()
     {
-        ClearDebugBeams();for(int i=0;i<playAreas.Count;i++)AddDebugBeam(playAreas[i].Border,AreaColor(i));AddDebugBeam(seekerBorder,Color.yellow);AddDebugBeam(endBorder,Color.cyan);AddDebugBeam(borderPoints,Color.magenta);
+        debugBeamCursor=0;for(int i=0;i<playAreas.Count;i++)AddDebugBeam(playAreas[i].Border,AreaColor(i));AddDebugBeam(seekerBorder,Color.yellow);AddDebugBeam(endBorder,Color.cyan);AddDebugBeam(borderPoints,Color.magenta);while(debugBorderBeams.Count>debugBeamCursor){int last=debugBorderBeams.Count-1;if(debugBorderBeams[last]!=null)Destroy(debugBorderBeams[last]);debugBorderBeams.RemoveAt(last);}
     }
     void AddDebugBeam(List<Vector3> points,Color color)
     {
-        if(points.Count<2)return;var go=new GameObject("HNS Setup Border Beam");var line=go.AddComponent<LineRenderer>();line.useWorldSpace=true;line.positionCount=points.Count+1;line.startWidth=.05f;line.endWidth=.05f;line.startColor=color;line.endColor=color;
+        if(points.Count<2)return;GameObject go;LineRenderer line;if(debugBeamCursor<debugBorderBeams.Count&&debugBorderBeams[debugBeamCursor]!=null){go=debugBorderBeams[debugBeamCursor];line=go.GetComponent<LineRenderer>();}else{go=new GameObject("HNS Setup Border Beam");line=go.AddComponent<LineRenderer>();if(debugBeamCursor<debugBorderBeams.Count)debugBorderBeams[debugBeamCursor]=go;else debugBorderBeams.Add(go);Plugin.Logger.LogInfo("[PREVIEW] allocated reusable border beam");}debugBeamCursor++;line.useWorldSpace=true;line.positionCount=points.Count+1;line.startWidth=.05f;line.endWidth=.05f;line.startColor=color;line.endColor=color;
         if(debugBeamMaterial==null){var shader=Shader.Find("Sprites/Default");if(shader!=null)debugBeamMaterial=new Material(shader);}if(debugBeamMaterial!=null)line.material=debugBeamMaterial;
-        for(int i=0;i<points.Count;i++)line.SetPosition(i,points[i]+Vector3.up*.15f);line.SetPosition(points.Count,points[0]+Vector3.up*.15f);debugBorderBeams.Add(go);
+        for(int i=0;i<points.Count;i++)line.SetPosition(i,points[i]+Vector3.up*.15f);line.SetPosition(points.Count,points[0]+Vector3.up*.15f);
     }
     void ClearDebugBeams(){foreach(var go in debugBorderBeams)if(go!=null)Destroy(go);debugBorderBeams.Clear();}
 }

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Required Notice: Copyright (c) 2026 AdamMady.
 // Required Notice: Original repository: https://github.com/AdamMady/Mady-s-Hide-And-Seek
 // Commercial use requires prior written permission from AdamMady.
@@ -44,68 +44,98 @@ public sealed partial class HideAndSeekTester
     internal sealed class PickupSnapshot
     {
         public Prop Prop;
-        public PropHome Home;
-        public PlayerCharacter Owner;
         public bool Blocked=true;
         public string AssignmentOwner;
-        public bool RestorePosition;
-        public Vector3 Position;
-        public Quaternion Rotation;
-
-        public float ReadyAt;
     }
-    readonly Dictionary<Prop,PickupSnapshot> propRefreshes=new();
     internal static PickupSnapshot BeforePickup(PlayerNetworking actor,PlayerHeldInformation held)
     {
-        if(!ActiveHost||actor==null||!held.hasProp)return null;
-        var prop=held.GetProp();
-        if(prop==null)return null;
+        if(!ActiveHost||actor==null||IsDummyManager(actor.playerCharacter)||!held.hasProp)return null;
+        var prop=held.GetProp();if(prop==null)return null;
         if(!ShouldBlockPropPickup(actor,held))
         {
             foreach(var pair in Instance.normalItemAssignments)if(pair.Value==prop)return new PickupSnapshot{Prop=prop,Blocked=false,AssignmentOwner=pair.Key};
             return null;
         }
-        if(Instance.propRefreshes.TryGetValue(prop,out var pending))return pending;
-        var repair=new PickupSnapshot{Prop=prop,Home=prop.currentHome,Owner=FindHolder(prop)};
-        bool assigned=Instance.normalItemAssignments.ContainsValue(prop)||Instance.lockedSpeakerAssignments.ContainsValue(prop);
-        if(!assigned)
-        {
-            if(Instance.markerPositions.TryGetValue(prop,out var position)){repair.RestorePosition=true;repair.Position=position;repair.Rotation=Instance.markerRotations.TryGetValue(prop,out var rotation)?rotation:prop.transform.rotation;}
-            else if(Instance.whiteboardOrigins.TryGetValue(prop,out var boardOrigin)){repair.RestorePosition=true;repair.Position=boardOrigin.Position;repair.Rotation=boardOrigin.Rotation;}
-            else if((Instance.IsSign(prop)||Instance.buoys.Contains(prop))&&Instance.propOrigins.TryGetValue(prop,out var origin)){repair.RestorePosition=true;repair.Position=origin.Position;repair.Rotation=origin.Rotation;}
-        }
-        return repair;
+        Instance.AuditLog("pickup:"+Key(actor.playerCharacter),$"[PICKUP BLOCK] player={Key(actor.playerCharacter)} item={prop.name} action={held.actionNumber} phase={Instance.phase}");
+        return new PickupSnapshot{Prop=prop};
     }
     internal static void CommitItemTransfer(PlayerNetworking actor,PickupSnapshot transfer)
     {
         if(!ActiveHost||actor?.playerCharacter==null||transfer==null||transfer.Blocked||actor.playerCharacter.hands?.heldProp!=transfer.Prop)return;
         string key=Key(actor.playerCharacter);
+        if(Instance.phase==Phase.SettingUp){Instance.AuditLog("setup-transfer:"+key,$"[ITEM TRANSFER] setup transfer ignored: {transfer.AssignmentOwner} -> {key}");return;}
         if(key==transfer.AssignmentOwner)return;
         if(Instance.normalItemAssignments.ContainsKey(key)||Instance.lockedSpeakerAssignments.ContainsKey(key))return;
         if(!Instance.normalItemAssignments.TryGetValue(transfer.AssignmentOwner,out var item)||item!=transfer.Prop)return;
         Instance.normalItemAssignments.Remove(transfer.AssignmentOwner);
         Instance.normalItemAssignments[key]=item;
+
         Plugin.Logger.LogInfo("[ITEM TRANSFER] "+transfer.AssignmentOwner+" -> "+key);
     }
-    [Il2CppInterop.Runtime.Attributes.HideFromIl2Cpp]
-    void BeginPropRepair(PickupSnapshot repair)
+    // Reject with the authoritative hand state and the request's action number,
+    // matching vanilla rejection. Never synthesize a successful pickup first.
+    static void CorrectPredictedPickup(PlayerNetworking actor,PlayerHeldInformation rejected,Prop prop)
     {
-        if(repair?.Prop==null)return;
-        if(propRefreshes.ContainsKey(repair.Prop))return;
-        propRefreshes[repair.Prop]=repair;repair.ReadyAt=Time.unscaledTime+.35f;
-        if(repair.Prop.currentHome!=null)repair.Prop.ServerSetUnpinned();
-        if(repair.Owner?.playerNetworking!=null)
+        var connection=actor.connectionToClient;
+        if(connection==null||connection==NetworkServer.localConnection||prop==null)return;
+        var actual=actor.playerHeldInformation;
+        if(actual.actionNumber>rejected.actionNumber){BroadcastSnapshot(actor,connection);return;}
+        // An empty authoritative state can still contain a previous throw's
+        // coordinates. Reusing those makes Drop move the newly predicted prop
+        // to that old location on the remote client.
+        var corrected=actual.hasProp?new PlayerHeldInformation(actual.GetProp()):PlayerHeldInformation.DropFromSnatch();
+        corrected.actionNumber=rejected.actionNumber;
+        actor.NetworkplayerHeldInformation=corrected;
+        BroadcastSnapshot(actor,connection);
+
+        // Preserve the attachment correction that works for bells. Loose boards
+        // have no home to replay; they need an explicit position update instead.
+        var home=prop.propHomeShellReference;
+        try{prop.propHomeShellReference=default;BroadcastSnapshot(prop,connection);}
+        finally{prop.propHomeShellReference=home;BroadcastSnapshot(prop,connection);}
+        var holder=FindHolder(prop);
+        if(holder?.playerNetworking!=null&&holder.playerNetworking!=actor)
         {
-            var owner=repair.Owner.playerNetworking;
-            StopUsingHeldProp(repair.Owner,repair.Prop);
-            var dropped=PlayerHeldInformation.DropFromSnatch();dropped.actionNumber=owner.playerHeldInformation.actionNumber+1;
-            owner.NetworkplayerHeldInformation=dropped;
-            BroadcastSnapshot(owner);
+            var owner=holder.playerNetworking;
+            var empty=PlayerHeldInformation.DropFromSnatch();empty.actionNumber=owner.playerHeldInformation.actionNumber;
+            try{SendHeldView(owner,empty,connection);}
+            finally{BroadcastSnapshot(owner,connection);}
         }
-        // Explicit full messages keep the two states separate even within one server tick.
-        BroadcastSnapshot(repair.Prop);
+        bool protectedWorld=Instance.IsProtectedWorldProp(prop);
+        if(protectedWorld&&prop.currentHome==null&&holder==null)
+        {
+            // Use the saved placement when available, otherwise the object's
+            // current authoritative position (including unplaced SpareSignProp).
+            var position=prop.transform.position;var rotation=prop.transform.rotation;
+            if(Instance.markerPositions.TryGetValue(prop,out var saved))
+            {
+                position=saved;
+                if(Instance.markerRotations.TryGetValue(prop,out var savedRotation))rotation=savedRotation;
+            }
+            PlaceStatic(prop,position,rotation);
+            Instance.AuditLog("prop-return:"+prop.netId,$"[PROTECTED PROP RETURN] prop={prop.name} netId={prop.netId} position={position} saved={Instance.markerPositions.ContainsKey(prop)}");
+        }
+        Instance.AuditLog("rollback:"+Key(actor.playerCharacter),$"[PICKUP ROLLBACK] player={Key(actor.playerCharacter)} prop={prop.name} netId={prop.netId} action={corrected.actionNumber} previousHeld={actual.hasProp} staleDropData={actual.hasDropData} oldDropPosition={actual.dropPosition} protectedWorld={protectedWorld} pinned={prop.currentHome!=null}; fresh hand state sent");
     }
-    static void BroadcastSnapshot(NetworkBehaviour behaviour)
+    bool IsProtectedWorldProp(Prop prop)=>prop!=null&&(IsSign(prop)||buoys.ContainsProp(prop)||markerPositions.ContainsKey(prop));
+    internal static bool BlockProtectedPropMovement(LobbyNetworking.HouseNetworkTransform networkTransform)
+    {
+        if(!ActiveHost||!Instance.poolBuilt||networkTransform==null)return false;
+        var prop=networkTransform.GetComponent<Prop>();
+        if(prop==null)return false;
+        bool blocked=Instance.IsProtectedWorldProp(prop)||
+            (prop.currentHome!=null&&(Instance.bells.ContainsProp(prop)||Instance.belts.ContainsProp(prop)));
+        if(blocked)Instance.AuditLog("prop-move:"+prop.netId,$"[PROTECTED MOVE BLOCK] prop={prop.name} netId={prop.netId}");
+        return blocked;
+    }
+    static void SendHeldView(PlayerNetworking player,PlayerHeldInformation view,NetworkConnection recipient)
+    {
+        var actual=player.playerHeldInformation;
+        try{player.playerHeldInformation=view;BroadcastSnapshot(player,recipient);}
+        finally{player.playerHeldInformation=actual;player.SetDirty();}
+    }
+
+    static void BroadcastSnapshot(NetworkBehaviour behaviour,NetworkConnection recipient=null)
     {
         var identity=behaviour?.netIdentity;
         if(identity?.observers==null)return;
@@ -117,7 +147,7 @@ public sealed partial class HideAndSeekTester
             behaviour.syncInterval=0f;behaviour.SetDirty();identity.SerializeServer(false,ownerWriter,observersWriter);
             foreach(var connection in identity.observers.Values)
             {
-                if(connection==null||connection==NetworkServer.localConnection)continue;
+                if(connection==null||connection==NetworkServer.localConnection||(recipient!=null&&connection!=recipient))continue;
                 var payload=(connection==identity.connectionToClient?ownerWriter:observersWriter).ToArraySegment();
                 if(payload.Count==0)continue;
                 packet.Reset();packet.WriteUShort(NetworkMessageId<EntityStateMessage>.Id);
@@ -126,28 +156,6 @@ public sealed partial class HideAndSeekTester
             }
         }
         finally{behaviour.syncInterval=interval;NetworkWriterPool.Return(packet);NetworkWriterPool.Return(observersWriter);NetworkWriterPool.Return(ownerWriter);}
-    }
-    void ProcessPropRepairs()
-    {
-        if(propRefreshes.Count==0)return;
-        foreach(var pair in new Dictionary<Prop,PickupSnapshot>(propRefreshes))
-        {
-            var repair=pair.Value;if(Time.unscaledTime<repair.ReadyAt)continue;propRefreshes.Remove(pair.Key);
-            var prop=repair.Prop;if(prop==null)continue;
-            if(phase!=Phase.Ended&&repair.Home!=null&&(repair.Home.pinnedProp==null||repair.Home.pinnedProp==prop))
-            {
-                if(ReleaseProp(prop))prop.ServerSetPinned(repair.Home);
-            }
-            else if(repair.RestorePosition)PlaceStatic(prop,repair.Position,repair.Rotation);
-            else if(phase!=Phase.Ended&&repair.Owner!=null&&!caught.Contains(Key(repair.Owner)))
-            {
-                string key=Key(repair.Owner);
-                bool stillAssigned=normalItemAssignments.TryGetValue(key,out var item)&&item==prop||lockedSpeakerAssignments.TryGetValue(key,out item)&&item==prop;
-                if(stillAssigned)GiveHeldItem(repair.Owner,prop);
-            }
-            BroadcastSnapshot(prop);
-            if(repair.Owner?.playerNetworking!=null)BroadcastSnapshot(repair.Owner.playerNetworking);
-        }
     }
     internal static bool MustDropCarriedPlayer(PlayerCharacter player)
     {
@@ -161,3 +169,16 @@ public sealed partial class HideAndSeekTester
     }
 }
 
+
+// These commands normally relay client movement directly. A denied pickup must
+// not allow its trailing movement/velocity commands to move protected objects.
+[HarmonyPatch(typeof(LobbyNetworking.HouseNetworkTransform),"UserCode_CmdMove__Vector3__UInt32__UInt16")]
+static class ProtectedPropMoveBlock
+{
+    static bool Prefix(LobbyNetworking.HouseNetworkTransform __instance)=>!HideAndSeekTester.BlockProtectedPropMovement(__instance);
+}
+[HarmonyPatch(typeof(LobbyNetworking.HouseNetworkTransform),"UserCode_CmdVelocity__Vector3__Vector3")]
+static class ProtectedPropVelocityBlock
+{
+    static bool Prefix(LobbyNetworking.HouseNetworkTransform __instance)=>!HideAndSeekTester.BlockProtectedPropMovement(__instance);
+}
