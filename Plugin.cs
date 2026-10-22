@@ -24,7 +24,7 @@ public enum LockedTime { Natural,Sunrise,Day,Sunset,Night }
 [BepInPlugin(Guid, Name, Version)]
 public sealed class Plugin : BasePlugin
 {
-    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.1.0";
+    public const string Guid="AdamMady.MadysHideNSeek", Name="Mady's HideNSeek", Version="1.1.1";
     internal const string DiscordUrl="https://discord.gg/5z3WvVhxCf";
     internal static ConfigEntry<KeyCode> MenuKey,SetupKey;
     internal static ConfigEntry<float> HideTime, RoundTime, Radius, HiderHeight, ReturnInset, EndRadius, RandomItemChance;
@@ -153,14 +153,15 @@ static class RoundPropPickupBlock
     }
 }
 
-[HarmonyPatch(typeof(PeckEffectTextInput),nameof(PeckEffectTextInput.InvokeUserCode_CmdSendNewText__String__String))]
+[HarmonyPatch]
 [HarmonyPriority(Priority.First)]
 static class RoundSignTextBlock
 {
-    static bool Prefix(NetworkBehaviour __0,NetworkReader __1)
+    static System.Reflection.MethodBase TargetMethod()=>AccessTools.Method(typeof(PeckEffectTextInput),"InvokeUserCode_CmdSendNewText__String__NetworkConnectionToClient")??AccessTools.Method(typeof(PeckEffectTextInput),"InvokeUserCode_CmdSendNewText__String__String");
+    static bool Prefix(NetworkBehaviour __0,NetworkReader __1,NetworkConnectionToClient __2)
     {
         var sign=__0?.TryCast<PeckEffectTextInput>();
-        return sign==null||!HideAndSeekTester.RejectSignEdit(sign,__1);
+        return sign==null||!HideAndSeekTester.RejectSignEdit(sign,__1,__2);
     }
 }
 [HarmonyPatch(typeof(PlayerNetworking),nameof(PlayerNetworking.CmdSetGestureLeftPoint))]
@@ -1186,15 +1187,19 @@ public sealed partial class HideAndSeekTester : MonoBehaviour
         if(ActiveHost&&b.netId!=0)Instance.expectedSignText[b.netId]=text;
         b.NetworknetworkedText=text;
     }
-    internal static bool RejectSignEdit(PeckEffectTextInput sign,NetworkReader reader)
+    static readonly System.Reflection.MethodInfo SignServerSetText=AccessTools.Method(typeof(PeckEffectTextInput),"ServerSetText");
+    static readonly System.Reflection.MethodInfo LegacySignSetText=AccessTools.Method(typeof(PeckEffectTextInput),"UserCode_CmdSendNewText__String__String");
+    internal static bool RejectSignEdit(PeckEffectTextInput sign,NetworkReader reader,NetworkConnectionToClient sender)
     {
         if(!ActiveHost||sign==null||!Instance.expectedSignText.TryGetValue(sign.netId,out var expected))return false;
         var attempted=NetworkReaderExtensions.ReadString(reader);
-        var author=NetworkReaderExtensions.ReadString(reader);
+        // 1.6.0 sends only text. A rejected edit keeps the existing sign author.
+        var author=SignServerSetText!=null?sign.authorIdentifier:NetworkReaderExtensions.ReadString(reader);
         if(attempted!=expected)Instance.AuditLog("sign-text:"+sign.netId,$"[SIGN TEXT BLOCK] netId={sign.netId} restored managed text");
         // Replay through the game's own text command so the editing client gets a
         // networked correction even when the host already holds the expected text.
-        sign.UserCode_CmdSendNewText__String__String(expected,author);
+        var setter=SignServerSetText??LegacySignSetText;
+        setter.Invoke(sign,new object[]{expected,author});
         return true;
     }
     static void SetState(Prop p,int state){if(p==null)return;foreach(var t in p.GetComponentsInChildren<TrackedPeckState>(true))if(t!=null)t.SetState(state);}
